@@ -1,0 +1,54 @@
+[package]
+name = "bili-player-cli"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0"
+
+[dependencies]
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+async-trait = "0.1"
+
+# TUI (P1)
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Image (cover display)
+ratatui-image = "1"
+image = "0.25"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# HTTP
+reqwest = { version = "0.12", features = ["cookies", "json", "rustls-tls"], default-features = false }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Crypto (WBI signing)
+md-5 = "0.10"
+
+# Utils
+dirs = "6"
+url = "2"
+unicode-width = "0.2"
+lru = "0.12"
+rand = "0.9"
+
+# Audio backend
+libmpv2 = "5"
+
+[dev-dependencies]
+mockito = "1"
+tempfile = "3"

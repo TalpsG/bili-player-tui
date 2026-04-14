@@ -1,0 +1,10 @@
+pub mod bilibili;
+pub mod cli;
+pub mod command;
+pub mod config;
+pub mod cover;
+pub mod error;
+pub mod player;
+pub mod playlist;
+pub mod queue;
+pub mod ui;
