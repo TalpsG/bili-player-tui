@@ -41,7 +41,7 @@ async fn play_command(config: &Config, input: &str) -> Result<()> {
     println!("Resolving: {bvid}");
 
     // Create API client
-    let client = BilibiliClient::new(config.bilibili.sessdata.clone());
+    let client = BilibiliClient::new(Some(config.bilibili.sessdata.clone()));
 
     // Get video info (cid)
     let track = get_video_info(&client, &bvid).await?;

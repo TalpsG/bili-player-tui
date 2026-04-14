@@ -6,43 +6,31 @@ use crate::error::BilibiliError;
 
 const BILIBILI_API_BASE: &str = "https://api.bilibili.com";
 const REFERER: &str = "https://www.bilibili.com";
-/// Dummy SESSDATA value used as placeholder when user has no login.
-/// We do NOT send this as a Cookie — it's just a sentinel to distinguish
-/// "no SESSDATA configured" from "user provided SESSDATA".
-const DUMMY_SESSDATA: &str = "dummyval";
 
 /// Bilibili API client with WBI signing support.
 pub struct BilibiliClient {
     http: Client,
-    /// Real SESSDATA if user is logged in, or DUMMY_SESSDATA sentinel if not.
-    /// Only real SESSDATA is sent as Cookie; dummy is never sent.
-    sessdata: String,
+    /// Real SESSDATA if user is logged in. None = not logged in.
+    /// Only Some values are sent as Cookie; unauthenticated requests send no Cookie.
+    sessdata: Option<String>,
     wbi_keys: WbiKeys,
 }
 
 impl BilibiliClient {
-    pub fn new(sessdata: String) -> Self {
+    pub fn new(sessdata: Option<String>) -> Self {
         let http = Client::builder()
             .cookie_store(true)
             .build()
             .expect("Failed to build HTTP client");
 
-        let sessdata = if sessdata.is_empty() {
-            DUMMY_SESSDATA.to_string()
-        } else {
-            sessdata
-        };
+        // Treat empty string as None
+        let sessdata = sessdata.filter(|s| !s.is_empty());
 
         Self {
             http,
             sessdata,
             wbi_keys: WbiKeys::new(),
         }
-    }
-
-    /// Whether the user has provided a real SESSDATA (logged in).
-    fn has_real_sessdata(&self) -> bool {
-        self.sessdata != DUMMY_SESSDATA
     }
 
     /// Ensure WBI keys are available, refresh if needed.
@@ -52,7 +40,7 @@ impl BilibiliClient {
         }
 
         let (img_key, sub_key) =
-            crate::bilibili::auth::fetch_wbi_keys(&self.http, &self.sessdata).await?;
+            crate::bilibili::auth::fetch_wbi_keys(&self.http, self.sessdata.as_deref()).await?;
         self.wbi_keys.refresh(&img_key, &sub_key);
         self.wbi_keys
             .mixin_key()
@@ -76,10 +64,9 @@ impl BilibiliClient {
         let url = format!("{BILIBILI_API_BASE}{path}");
         let mut request = self.http.get(&url).query(&params);
 
-        // Only send Cookie with real SESSDATA.
-        // Dummy SESSDATA causes -101 on nav API and v_voucher on playurl API.
-        if self.has_real_sessdata() {
-            request = request.header("Cookie", format!("SESSDATA={}", self.sessdata));
+        // Only send Cookie when user has a real SESSDATA.
+        if let Some(ref sessdata) = self.sessdata {
+            request = request.header("Cookie", format!("SESSDATA={sessdata}"));
         }
 
         // Add Referer for anti-hotlink bypass
@@ -109,12 +96,8 @@ impl BilibiliClient {
     }
 
     /// Get the SESSDATA (for checking login status).
-    /// Returns None if using dummy value (not logged in).
+    /// Returns None if not logged in.
     pub fn sessdata(&self) -> Option<&str> {
-        if self.sessdata == DUMMY_SESSDATA {
-            None
-        } else {
-            Some(&self.sessdata)
-        }
+        self.sessdata.as_deref()
     }
 }

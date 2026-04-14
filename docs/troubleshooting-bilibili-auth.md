@@ -33,10 +33,6 @@ playurl API（`/x/player/wbi/playurl`）是获取视频播放地址的接口。�
 
 DASH（Dynamic Adaptive Streaming over HTTP）是一种流媒体传输格式。B站的高清视频/音频都采用 DASH 格式，音视频是分开的流。我们设置 `fnval=16` 参数来请求 DASH 格式，从而获取独立的音频流。
 
-### Dummy SESSDATA
-
-Dummy SESSDATA 是一个假的 SESSDATA 值（我们用的是字符串 `"dummyval"`）。这个想法来源于 [NoxPlayer](https://github.com/lovegaoshi/NoxPlayer) 项目：当用户没有提供真实的 SESSDATA 时，用一个假值代替，试图绕过 B站的某些反爬检测。
-
 ---
 
 ## 问题现象
@@ -76,23 +72,23 @@ Error: Parse error: invalid type: null, expected a sequence at line 1 column 345
 
 ### 第一步：理解 Bilibili API 的 Cookie 策略
 
-B站的不同 API 对 Cookie 的态度不同：
+B站的不同 API 对无效 Cookie 的态度不同：
 
-| API | 不发 Cookie | 发真实 SESSDATA | 发 Dummy SESSDATA |
-|-----|-----------|---------------|------------------|
+| API | 不发 Cookie | 发真实 SESSDATA | 发假 SESSDATA |
+|-----|-----------|---------------|--------------|
 | nav（获取WBI密钥） | 正常返回密钥 | 正常返回密钥+用户信息 | 返回 -101 错误 |
 | playurl（获取播放地址） | 正常返回DASH数据 | 返回更高质量音频 | 返回 v_voucher（验证码） |
 | search（搜索） | 正常返回搜索结果 | 正常返回搜索结果 | 正常返回搜索结果 |
 
-**关键发现**：Dummy SESSDATA 在 nav API 和 playurl API 上都会引发问题，但在搜索 API 上不会。
+**关键发现**：假 SESSDATA 在 nav API 和 playurl API 上都会引发问题，但在搜索 API 上不会。而实测表明搜索 API 不发 Cookie 也能正常工作，所以根本没有发送假 Cookie 的必要。
 
 ### 第二步：nav API 的 -101 问题
 
-nav API 会校验 SESSDATA 的有效性。当它收到一个无效的 `SESSDATA=dummyval` 时，直接返回 -101 错误码（"账号未登录"），并且不返回 WBI 密钥数据。
+最初代码参考了 [NoxPlayer](https://github.com/lovegaoshi/NoxPlayer) 的做法，在用户未提供 SESSDATA 时用一个假值 `"dummyval"` 作为 Cookie 发送。nav API 会校验 SESSDATA 的有效性——当它收到一个无效的 `SESSDATA=dummyval` 时，直接返回 -101 错误码（"账号未登录"），并且不返回 WBI 密钥数据。
 
 **不发送任何 Cookie** 时，nav API 虽然也返回非零的 code，但 `data.wbi_img` 字段仍然存在，里面包含我们需要的密钥。
 
-**修复**：nav API 在 SESSDATA 为 dummy 值时不发送 Cookie 头。
+**修复**：nav API 在用户未登录时不发送 Cookie 头。
 
 ### 第三步：playurl API 的 v_voucher 问题
 
@@ -103,7 +99,7 @@ nav API 会校验 SESSDATA 的有效性。当它收到一个无效的 `SESSDATA=
 
 `v_voucher` 是 B站的"人机验证"响应：当它检测到异常的登录凭证时，不直接报错，而是要求你完成验证码。这种"静默失败"比返回错误码更难排查，因为 HTTP 状态码和 `code` 字段都是正常的（0 = 成功）。
 
-**修复**：playurl API 同样在 SESSDATA 为 dummy 值时不发送 Cookie 头。
+**修复**：playurl API 同样在用户未登录时不发送 Cookie 头。
 
 ### 第四步：DolbyData 的 null 反序列化问题
 
@@ -140,18 +136,57 @@ struct DolbyData {
 
 ---
 
-## 最终解决方案
+## 尝试过的方案
 
-### 1. Cookie 策略：只在有真实 SESSDATA 时才发送
+### 方案 A：用假 SESSDATA 绕过反爬（已放弃）
+
+最初参考 NoxPlayer 项目，在用户没有 SESSDATA 时发送一个假的 `"dummyval"` 作为 Cookie。初衷是假设搜索 API 在完全没有 Cookie 时会返回 412（风控拦截），但实测发现：
+
+1. 搜索 API 不发 Cookie 也能正常工作
+2. 假 SESSDATA 在 nav API 上触发 -101 错误
+3. 假 SESSDATA 在 playurl API 上触发 v_voucher（人机验证）
+
+结论：假 Cookie 弊大于利，完全不需要。
+
+### 方案 B：不同接口使用不同 Cookie 策略（已放弃）
+
+第二个方案是统一发送 Cookie，但在 nav API 等特定端点跳过假值。这通过硬编码 `"dummyval"` 字符串比较来实现：
 
 ```rust
-// api.rs - BilibiliClient::get() 方法
-if self.has_real_sessdata() {
-    request = request.header("Cookie", format!("SESSDATA={}", self.sessdata));
+if !sessdata.is_empty() && sessdata != "dummyval" {
+    request = request.header("Cookie", format!("SESSDATA={sessdata}"));
 }
 ```
 
-Dummy SESSDATA（`"dummyval"`）仅作为内部哨兵值（sentinel），用于区分"用户没配置 SESSDATA"和"用户提供了 SESSDATA"，**永远不会作为 Cookie 发送**。
+这个方案能工作，但用 magic string 做哨兵值不优雅，而且逻辑散落在多处。
+
+### 方案 C：用 Option<String> 表示可选的 SESSDATA（最终方案）
+
+去掉 dummy 值，直接用 Rust 的 `Option<String>` 类型来表达"有或没有 SESSDATA"：
+
+- `Some("真实的SESSDATA")` → 发送 Cookie
+- `None` → 不发送 Cookie
+
+类型系统保证了不可能存在"假的 SESSDATA"，逻辑清晰，不需要 magic string。
+
+---
+
+## 最终解决方案
+
+### 1. SESSDATA 用 Option<String> 表示，不发任何假凭证
+
+```rust
+// api.rs
+pub struct BilibiliClient {
+    sessdata: Option<String>,  // None = 未登录，Some = 已登录
+    // ...
+}
+
+// get() 方法中
+if let Some(ref sessdata) = self.sessdata {
+    request = request.header("Cookie", format!("SESSDATA={sessdata}"));
+}
+```
 
 ### 2. nav API：接受非零 code 的响应
 
@@ -197,4 +232,4 @@ if let Some(dolby) = dash.dolby {
 
 3. **不同 API 端点的认证策略不同**：不能假设所有 API 对 Cookie 的处理方式一致。nav API 对无效 Cookie 返回错误码，playurl API 返回验证码要求，而搜索 API 则无所谓。需要逐一测试验证。
 
-4. **Dummy SESSDATA 的局限性**：最初的设想（参考 NoxPlayer）是 dummy SESSDATA 可以绕过 B站的反爬检测，但实际上在 nav 和 playurl 等关键 API 上反而引发了更多问题。最终方案是不发送任何假凭证，让 API 以"未登录"身份正常响应。
+4. **不要用 magic string 替代类型系统**：最初用 `"dummyval"` 字符串作为哨兵值区分"有没有 SESSDATA"，这本质上是在用字符串模拟 `Option` 类型。Rust 的 `Option<String>` 已经完美表达了"有或没有"的语义，应该直接使用类型系统而非引入 magic string。

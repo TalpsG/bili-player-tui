@@ -70,12 +70,12 @@ struct WbiImg {
 /// We only need the wbi_img data, so we don't require code == 0.
 pub async fn fetch_wbi_keys(
     client: &reqwest::Client,
-    sessdata: &str,
+    sessdata: Option<&str>,
 ) -> Result<(String, String), BilibiliError> {
     let mut request = client.get("https://api.bilibili.com/x/web-interface/nav");
 
-    // Only send real SESSDATA, skip dummy value for this endpoint
-    if !sessdata.is_empty() && sessdata != "dummyval" {
+    // Only send Cookie with real SESSDATA
+    if let Some(sessdata) = sessdata {
         request = request.header("Cookie", format!("SESSDATA={sessdata}"));
     }
 
