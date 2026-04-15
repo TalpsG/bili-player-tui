@@ -43,7 +43,7 @@ pub fn sign_wbi_params(
     // Sort by key
     params.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Filter and URL-encode
+    // Filter special characters and URL-encode
     const FILTER_CHARS: &[char] = &['!', '\'', '(', ')', '*'];
     for (_, v) in params.iter_mut() {
         *v = v
@@ -52,10 +52,15 @@ pub fn sign_wbi_params(
             .collect::<String>();
     }
 
-    // Build query string
+    // Build query string with encodeURIComponent-style encoding
+    // (uppercase hex digits, spaces as %20)
     let query: String = params
         .iter()
-        .map(|(k, v)| format!("{k}={v}"))
+        .map(|(k, v)| {
+            let encoded_k = encodeURIComponent(k);
+            let encoded_v = encodeURIComponent(v);
+            format!("{encoded_k}={encoded_v}")
+        })
         .collect::<Vec<_>>()
         .join("&");
 
@@ -67,6 +72,27 @@ pub fn sign_wbi_params(
 
     // Append w_rid
     params.push(("w_rid".to_string(), hash));
+}
+
+/// encodeURIComponent-style URL encoding for WBI signing.
+/// Follows ECMA-262: uppercase hex digits, spaces as %20.
+/// Unescaped chars: A-Z a-z 0-9 - _ . ~
+fn encodeURIComponent(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            _ => {
+                let mut buf = [0u8; 4];
+                for byte in c.encode_utf8(&mut buf).as_bytes() {
+                    result.push_str(&format!("%{byte:02X}"));
+                }
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -183,5 +209,40 @@ mod tests {
         let hash2 = format!("{:x}", hasher2.finalize());
 
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_encode_uri_component() {
+        // ASCII alphanumeric stays as-is
+        assert_eq!(encodeURIComponent("hello123"), "hello123");
+        // Space becomes %20
+        assert_eq!(encodeURIComponent("one one"), "one%20one");
+        // Chinese characters are UTF-8 encoded with uppercase hex
+        assert_eq!(encodeURIComponent("五"), "%E4%BA%94");
+        // Special chars are encoded
+        assert_eq!(encodeURIComponent("a+b"), "a%2Bb");
+        // Unescaped chars: - _ . ~
+        assert_eq!(encodeURIComponent("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn test_wbi_sign_with_chinese() {
+        let mixin_key = "0123456789abcdef0123456789abcdef";
+        let mut params = vec![
+            ("keyword".to_string(), "周杰伦".to_string()),
+            ("page".to_string(), "1".to_string()),
+        ];
+
+        sign_wbi_params(&mut params, mixin_key);
+
+        // Should have wts and w_rid
+        let keys: Vec<&str> = params.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"wts"));
+        assert!(keys.contains(&"w_rid"));
+
+        // w_rid should be valid hex
+        let wrid = params.iter().find(|(k, _)| k == "w_rid").unwrap().1.clone();
+        assert_eq!(wrid.len(), 32);
+        assert!(wrid.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

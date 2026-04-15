@@ -71,11 +71,13 @@ pub async fn get_audio_stream(
         ("cid".to_string(), cid.to_string()),
         ("qn".to_string(), "64".to_string()),
         ("fnval".to_string(), "16".to_string()), // Request DASH format
+        ("try_look".to_string(), "1".to_string()), // Allow preview without login
     ];
 
     let resp: PlayUrlResponse = client
         .get("/x/player/wbi/playurl", params, true)
         .await?;
+
 
     if resp.code != 0 {
         return Err(BilibiliError::ApiResponse {

@@ -33,11 +33,19 @@ playurl API（`/x/player/wbi/playurl`）是获取视频播放地址的接口。�
 
 DASH（Dynamic Adaptive Streaming over HTTP）是一种流媒体传输格式。B站的高清视频/音频都采用 DASH 格式，音视频是分开的流。我们设置 `fnval=16` 参数来请求 DASH 格式，从而获取独立的音频流。
 
+### User-Agent
+
+User-Agent 是 HTTP 请求头中的一个字段，用于标识发起请求的客户端类型（如浏览器、命令行工具等）。B站的部分 API 会检查 User-Agent，对看起来不像浏览器的请求（如 `curl/8.7.1`）返回空数据或触发风控。
+
+### try_look
+
+`try_look=1` 是 playurl API 的一个参数，允许未登录用户"试看"视频。参考 [NoxPlayer](https://github.com/lovegaoshi/NoxPlayer) 项目，该参数可以在不登录的情况下获取音频流。
+
 ---
 
 ## 问题现象
 
-运行 `bili-player-cli play BV1hu411M7Ff` 时，经历了三个阶段的错误：
+运行 `bili-player-cli play BV1hu411M7Ff` 时，经历了多个阶段的错误：
 
 ### 错误 1：获取 WBI 密钥失败（-101）
 
@@ -47,14 +55,14 @@ Error: API request failed: -101 - Failed to get WBI keys
 
 视频信息获取成功（标题、作者、时长都能显示），但在获取 WBI 密钥时失败。
 
-### 错误 2：修复错误 1 后，获取音频流失败
+### 错误 2：修复错误 1 后，获取音频流失败（间歇性）
 
 ```
 Title: 【4K修复 周杰伦作曲】许茹芸 《手写爱》MV
 Error: No audio stream found
 ```
 
-WBI 密钥获取成功了，视频信息也获取成功了，但音频流为空。
+WBI 密钥获取成功了，视频信息也获取成功了，但音频流为空。**关键特征：间歇性出现**——有时能播放，有时不能，同样的代码同样的命令结果不一致。
 
 ### 错误 3：深入排查发现解析失败
 
@@ -134,6 +142,37 @@ struct DolbyData {
 
 **修复**：将 `audio` 字段改为 `Option<Vec<DashAudioItem>>`，这样 `null` 会被解析为 `None`。
 
+### 第五步：User-Agent 导致的间歇性失败
+
+修复上述问题后，play 命令仍然**间歇性**失败。添加诊断输出发现：
+
+```
+[DBG] playurl code=0, has_data=true, has_dash=false
+[DBG] data fields present: dash=false, durl=false
+```
+
+API 返回 `code: 0` 和 `data`，但 `data.dash` 和 `data.durl` 都不存在。通过 curl 对比测试：
+
+| User-Agent | 结果 |
+|-----------|------|
+| `curl/8.7.1`（curl 默认） | `has_dash: false` — 被拦截 |
+| `reqwest/0.12.12`（reqwest 默认） | `has_dash: true` — 通过 |
+| Firefox UA | `has_dash: true` — 通过 |
+
+**根因**：B站 playurl API 会检查 User-Agent，对非浏览器的 UA 返回空数据（同样是 `code: 0` 的静默失败）。reqwest 的默认 UA 偶尔能通过，但 B站的反爬策略并非每次都严格执行，导致了间歇性失败。
+
+**修复**：在所有 API 请求中伪装浏览器 User-Agent。
+
+### 第六步：WBI 签名缺少 URL 编码
+
+根据 [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) 文档，WBI 签名算法要求对参数值做 `encodeURIComponent` 风格的 URL 编码（大写十六进制，空格为 `%20`）。我们的原始实现没有做 URL 编码，对于纯 ASCII 参数（如 `bvid=BV1hu411M7Ff`）不会出错，但搜索 API 的 `keyword` 参数包含中文时签名会错误。
+
+**修复**：实现 `encodeURIComponent` 函数，在计算 w_rid 时对参数进行 URL 编码。
+
+### 第七步：添加 try_look=1 参数
+
+参考 [NoxPlayer](https://github.com/lovegaoshi/NoxPlayer) 的实现，playurl API 加上 `try_look=1` 参数可以允许未登录用户预览/获取音频流，提高无登录情况下的成功率。
+
 ---
 
 ## 尝试过的方案
@@ -160,14 +199,13 @@ if !sessdata.is_empty() && sessdata != "dummyval" {
 
 这个方案能工作，但用 magic string 做哨兵值不优雅，而且逻辑散落在多处。
 
-### 方案 C：用 Option<String> 表示可选的 SESSDATA（最终方案）
+### 方案 C：关闭 cookie_store（已尝试，非根因）
 
-去掉 dummy 值，直接用 Rust 的 `Option<String>` 类型来表达"有或没有 SESSDATA"：
+怀疑 reqwest 的 `cookie_store(true)` 导致请求间状态污染，自动回传了 B站的风控 Cookie。关闭后问题依然存在，说明不是根因。
 
-- `Some("真实的SESSDATA")` → 发送 Cookie
-- `None` → 不发送 Cookie
+### 方案 D：用 Option<String> 表示可选的 SESSDATA + 浏览器 UA（最终方案）
 
-类型系统保证了不可能存在"假的 SESSDATA"，逻辑清晰，不需要 magic string。
+去掉 dummy 值，用 Rust 的 `Option<String>` 类型表达"有或没有 SESSDATA"，同时在所有请求中伪装浏览器 User-Agent，加上 `try_look=1` 参数。
 
 ---
 
@@ -188,7 +226,53 @@ if let Some(ref sessdata) = self.sessdata {
 }
 ```
 
-### 2. nav API：接受非零 code 的响应
+### 2. 伪装浏览器 User-Agent
+
+```rust
+// api.rs - get() 方法中
+request = request.header(
+    "User-Agent",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+);
+```
+
+### 3. playurl 请求添加 try_look=1
+
+```rust
+// stream.rs
+let params = vec![
+    ("bvid".to_string(), bvid.to_string()),
+    ("cid".to_string(), cid.to_string()),
+    ("qn".to_string(), "64".to_string()),
+    ("fnval".to_string(), "16".to_string()),
+    ("try_look".to_string(), "1".to_string()),
+];
+```
+
+### 4. WBI 签名添加 URL 编码
+
+```rust
+// wbi.rs - encodeURIComponent 风格编码
+fn encodeURIComponent(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            _ => {
+                let mut buf = [0u8; 4];
+                for byte in c.encode_utf8(&mut buf).as_bytes() {
+                    result.push_str(&format!("%{byte:02X}"));
+                }
+            }
+        }
+    }
+    result
+}
+```
+
+### 5. nav API：接受非零 code 的响应
 
 ```rust
 // auth.rs - fetch_wbi_keys()
@@ -198,9 +282,7 @@ let data = nav.data.ok_or_else(|| {
 })?;
 ```
 
-未登录时 nav API 的 `code` 不是 0，但 `data.wbi_img` 仍然存在，所以我们只检查 `data` 和 `wbi_img` 是否存在，不要求 `code == 0`。
-
-### 3. DolbyData.audio：用 Option 包裹 Vec
+### 6. DolbyData.audio：用 Option 包裹 Vec
 
 ```rust
 // stream.rs
@@ -210,26 +292,18 @@ struct DolbyData {
 }
 ```
 
-对应的提取逻辑也改为两层 Option 解包：
-
-```rust
-if let Some(dolby) = dash.dolby {
-    if let Some(audio_list) = dolby.audio {
-        if let Some(audio) = audio_list.into_iter().next() {
-            // ... 使用 audio
-        }
-    }
-}
-```
-
 ---
 
 ## 教训与总结
 
-1. **静默失败比显式错误更危险**：playurl API 返回 `code: 0` 但数据只有 `v_voucher`，这种"成功响应但缺少关键数据"比返回错误码更难排查。遇到 API 返回"成功"但数据不符合预期时，应该打印原始响应内容检查。
+1. **静默失败比显式错误更危险**：playurl API 返回 `code: 0` 但数据只有 `v_voucher` 或空 dash，这种"成功响应但缺少关键数据"比返回错误码更难排查。遇到 API 返回"成功"但数据不符合预期时，应该打印原始响应内容检查。
 
 2. **API 响应中的 null 需要防御性处理**：B站 API 的文档不完善，很多字段的 null 行为没有文档说明。对于可能为 null 的字段，Rust 中应优先使用 `Option` 包裹，而不是假设它一定是数组或对象。
 
 3. **不同 API 端点的认证策略不同**：不能假设所有 API 对 Cookie 的处理方式一致。nav API 对无效 Cookie 返回错误码，playurl API 返回验证码要求，而搜索 API 则无所谓。需要逐一测试验证。
 
 4. **不要用 magic string 替代类型系统**：最初用 `"dummyval"` 字符串作为哨兵值区分"有没有 SESSDATA"，这本质上是在用字符串模拟 `Option` 类型。Rust 的 `Option<String>` 已经完美表达了"有或没有"的语义，应该直接使用类型系统而非引入 magic string。
+
+5. **User-Agent 是反爬的第一道防线**：B站不仅检查 Cookie，还检查 User-Agent。对于命令行工具，必须伪装浏览器 UA，否则部分 API 会静默返回空数据。这也解释了为什么用 curl 测试时总是失败（curl 默认 UA 是 `curl/x.x.x`），而程序里有时能成功（reqwest 默认 UA 有时能通过 B站的风控）。
+
+6. **间歇性故障通常意味着反爬策略的模糊执行**：B站的反爬并非每次都严格执行（可能是基于请求频率、时间段、IP 信誉等因素的动态策略），导致同样的代码有时能通过有时不能。解决方案应该是满足所有已知的反爬要求，而不是依赖"有时候能通过"。

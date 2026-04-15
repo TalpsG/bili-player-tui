@@ -19,7 +19,7 @@ pub struct BilibiliClient {
 impl BilibiliClient {
     pub fn new(sessdata: Option<String>) -> Self {
         let http = Client::builder()
-            .cookie_store(true)
+            .cookie_store(false)
             .build()
             .expect("Failed to build HTTP client");
 
@@ -71,6 +71,9 @@ impl BilibiliClient {
 
         // Add Referer for anti-hotlink bypass
         request = request.header("Referer", REFERER);
+
+        // Spoof User-Agent to bypass anti-bot checks on playurl API
+        request = request.header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
 
         let resp = request
             .send()
