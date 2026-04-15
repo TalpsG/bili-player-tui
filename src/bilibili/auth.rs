@@ -9,10 +9,20 @@ pub struct WbiKeys {
     inner: Mutex<WbiKeysInner>,
 }
 
+#[derive(Clone)]
 struct WbiKeysInner {
     img_key: String,
     sub_key: String,
     mixin_key: String,
+}
+
+impl Clone for WbiKeys {
+    fn clone(&self) -> Self {
+        let inner = self.inner.lock().unwrap().clone();
+        Self {
+            inner: Mutex::new(inner),
+        }
+    }
 }
 
 impl WbiKeys {

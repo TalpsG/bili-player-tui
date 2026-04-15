@@ -8,6 +8,7 @@ const BILIBILI_API_BASE: &str = "https://api.bilibili.com";
 const REFERER: &str = "https://www.bilibili.com";
 
 /// Bilibili API client with WBI signing support.
+#[derive(Clone)]
 pub struct BilibiliClient {
     http: Client,
     /// Real SESSDATA if user is logged in. None = not logged in.

@@ -1,1 +1,35 @@
-// Command enum - P1 implementation
+/// User-intent commands produced by key binding logic.
+/// App::handle_command() dispatches these.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Quit,
+    TogglePause,
+    NextTrack,
+    PrevTrack,
+    SeekForward,
+    SeekBackward,
+    VolumeUp,
+    VolumeDown,
+    ToggleMute,
+    ToggleShuffle,
+    CycleRepeat,
+    FocusNext,
+    FocusPrev,
+    MoveCursorUp,
+    MoveCursorDown,
+    MoveCursorPageUp,
+    MoveCursorPageDown,
+    MoveCursorTop,
+    MoveCursorBottom,
+    PlaySelected,
+    AddToQueue,
+    RemoveFromQueue,
+    OpenSearch,
+    CloseSearch,
+    SearchInput(char),
+    SearchBackspace,
+    SearchSubmit,
+    OpenHelp,
+    CloseHelp,
+    Noop,
+}

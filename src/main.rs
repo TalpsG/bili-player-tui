@@ -7,8 +7,7 @@ use bili_player_cli::bilibili::stream::get_audio_stream;
 use bili_player_cli::bilibili::video::get_video_info;
 use bili_player_cli::cli::Commands;
 use bili_player_cli::config::Config;
-use bili_player_cli::player::mpv::{wait_until_end, MpvBackend};
-use bili_player_cli::player::AudioBackend;
+use bili_player_cli::player::mpv::MpvBackend;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,8 +24,9 @@ async fn main() -> Result<()> {
     match args.command {
         Some(Commands::Play { input }) => play_command(&config, &input).await?,
         None => {
-            // P1: TUI mode
-            eprintln!("TUI mode not yet implemented. Use: bili-player-cli play <BV号或URL>");
+            // TUI mode
+            let mut app = bili_player_cli::app::App::new(config)?;
+            app.run().await?;
         }
     }
 
@@ -71,12 +71,19 @@ async fn play_command(config: &Config, input: &str) -> Result<()> {
     // Create mpv backend and play
     let mut mpv = MpvBackend::new()?;
     mpv.set_volume(config.player.volume);
-    mpv.play(&source).await?;
+    mpv.play(&source)?;
 
     println!("Playing... (Ctrl+C to stop)");
 
-    // Block until playback ends
-    wait_until_end(&mut mpv.mpv);
+    // Block until playback ends using the event receiver
+    while let Some(event) = mpv.event_rx().recv().await {
+        match event {
+            bili_player_cli::event::PlayerEvent::TrackEnded { .. } => break,
+            bili_player_cli::event::PlayerEvent::Shutdown => break,
+            _ => {}
+        }
+    }
 
+    let _ = mpv.shutdown();
     Ok(())
 }

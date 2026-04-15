@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// A playable track from a Bilibili video.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// BV number (unique identifier)
     pub bvid: String,
@@ -27,7 +27,7 @@ pub struct Track {
 }
 
 /// Resolved audio stream source for playback.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackSource {
     /// Audio stream URL (expires ~120 minutes)
     pub stream_url: String,
