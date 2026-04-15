@@ -5,10 +5,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::ui::Ui;
 
 /// Draw search overlay: centered popup with input box + result list.
-pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, screen: Rect) {
+pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let width = 60u16.min(screen.width.saturating_sub(4));
     let height = 20u16.min(screen.height.saturating_sub(4));
     let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
@@ -43,7 +42,7 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, screen: Rect) {
         .iter()
         .enumerate()
         .map(|(i, track)| {
-            let style = if i == ui.search_cursor {
+            let style = if i == app.search_cursor {
                 Style::default().bg(Color::Blue).fg(Color::White)
             } else {
                 Style::default()
@@ -66,7 +65,7 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, screen: Rect) {
 
     let mut state = ListState::default();
     if !app.search_results.is_empty() {
-        state.select(Some(ui.search_cursor));
+        state.select(Some(app.search_cursor));
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
 }

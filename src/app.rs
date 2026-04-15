@@ -268,6 +268,7 @@ impl App {
             self.input_mode,
             self.focus_column,
             &self.popup_stack,
+            self.search_results.len(),
         );
         if cmd != Command::Noop {
             self.handle_command(cmd);
@@ -680,7 +681,7 @@ impl App {
             crate::ui::volume_slider::draw(f, self, area);
         }
         if self.popup_stack.contains(&PopupLayer::Search) {
-            crate::ui::search_view::draw(f, self, &mut ui, area);
+            crate::ui::search_view::draw(f, self, area);
         }
         if self.popup_stack.contains(&PopupLayer::Help) {
             crate::ui::help_view::draw(f, self, area);

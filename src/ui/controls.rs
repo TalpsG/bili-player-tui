@@ -9,6 +9,7 @@ pub fn key_to_command(
     mode: InputMode,
     focus: FocusColumn,
     popup_stack: &[PopupLayer],
+    search_results_len: usize,
 ) -> Command {
     // If Help popup is active, only Esc/? close it
     if popup_stack.contains(&PopupLayer::Help) {
@@ -17,12 +18,12 @@ pub fn key_to_command(
 
     // If Search popup is active, handle search input
     if popup_stack.contains(&PopupLayer::Search) {
-        return search_mode_keys(key);
+        return search_mode_keys(key, search_results_len);
     }
 
     match mode {
         InputMode::Normal => normal_mode_keys(key, focus),
-        InputMode::SearchInput => search_mode_keys(key),
+        InputMode::SearchInput => search_mode_keys(key, search_results_len),
     }
 }
 
@@ -33,10 +34,17 @@ fn help_mode_keys(key: KeyEvent) -> Command {
     }
 }
 
-fn search_mode_keys(key: KeyEvent) -> Command {
+fn search_mode_keys(key: KeyEvent, search_results_len: usize) -> Command {
     match key.code {
         KeyCode::Esc => Command::CloseSearch,
-        KeyCode::Enter => Command::SearchSubmit,
+        // Enter: play selected if results exist, otherwise submit search
+        KeyCode::Enter => {
+            if search_results_len > 0 {
+                Command::PlaySelected
+            } else {
+                Command::SearchSubmit
+            }
+        }
         KeyCode::Backspace => Command::SearchBackspace,
         // All character input (including j/k which are text in search mode)
         // Accept any modifier combination that produces a Char — tmux may report
