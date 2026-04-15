@@ -454,8 +454,7 @@ impl App {
                         let idx = self.queue.len() - 1;
                         self.queue.jump_to(idx);
                         self.play_track(track);
-                        self.input_mode = InputMode::Normal;
-                        self.hide_popup(PopupLayer::Search);
+                        self.set_status(format!("Playing: {}", self.search_results[self.search_cursor].title));
                     }
                 } else {
                     self.play_selected();
@@ -555,6 +554,11 @@ impl App {
                 Ok(Ok(source)) => {
                     if let Err(e) = self.player.play(&source) {
                         self.set_status(format!("Playback error: {e}"));
+                    } else {
+                        // Update source info in the queue
+                        if let Some(current) = self.queue.current_track_mut() {
+                            current.source = Some(source);
+                        }
                     }
                     self.is_playing = true;
                 }
@@ -630,13 +634,25 @@ impl App {
     }
 
     fn play_track(&mut self, track: Track) {
+        let client = self.client.clone();
         let bvid = track.bvid.clone();
         let cid = track.cid;
-        let client = self.client.clone();
 
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
-            let result = get_audio_stream(&client, &bvid, cid).await;
+            let target_cid = if cid == 0 {
+                match get_video_info(&client, &bvid).await {
+                    Ok(info) => info.cid,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            } else {
+                cid
+            };
+
+            let result = get_audio_stream(&client, &bvid, target_cid).await;
             let _ = tx.send(result);
         });
 
