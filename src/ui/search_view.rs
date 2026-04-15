@@ -20,7 +20,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let is_input_mode = app.input_mode == InputMode::SearchInput;
+    let _is_input_mode = app.input_mode == InputMode::SearchInput;
     let mode_str = match app.input_mode {
         InputMode::SearchInput => " -- INSERT -- ",
         InputMode::SearchNormal => " -- NORMAL -- ",

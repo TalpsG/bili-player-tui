@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crossterm::{
-    event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers},
+    event::{Event as CrosstermEvent, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -696,7 +696,7 @@ impl App {
     }
 
     // Popup management
-    fn show_popup(&mut self, layer: PopupLayer) {
+    pub(crate) fn show_popup(&mut self, layer: PopupLayer) {
         if layer == PopupLayer::VolumeSlider {
             self.volume_popup_time = Some(std::time::Instant::now());
         }
@@ -733,7 +733,7 @@ impl App {
     }
 
     /// Draw the entire UI. Splits borrows to avoid self conflict.
-    fn draw(&mut self, f: &mut ratatui::Frame) {
+    pub(crate) fn draw(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
         self.terminal_width = area.width;
         self.terminal_height = area.height;

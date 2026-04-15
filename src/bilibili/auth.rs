@@ -58,6 +58,7 @@ impl WbiKeys {
 
 #[derive(Debug, Deserialize)]
 struct NavResponse {
+    #[allow(dead_code)]
     code: i64,
     data: Option<NavData>,
 }

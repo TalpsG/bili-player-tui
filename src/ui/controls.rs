@@ -48,7 +48,7 @@ fn search_input_mode_keys(key: KeyEvent) -> Command {
     }
 }
 
-fn search_normal_mode_keys(key: KeyEvent, search_results_len: usize) -> Command {
+fn search_normal_mode_keys(key: KeyEvent, _search_results_len: usize) -> Command {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Command::CloseSearch,
         KeyCode::Enter => {

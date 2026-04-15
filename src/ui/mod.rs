@@ -9,6 +9,9 @@ pub mod theme;
 pub mod track_list;
 pub mod volume_slider;
 
+#[cfg(test)]
+mod tests;
+
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Gauge, Paragraph};
@@ -43,9 +46,16 @@ impl Default for Ui {
 
 /// Draw header bar.
 pub fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    use unicode_width::UnicodeWidthStr;
     let left = " bili-player-cli";
     let right = if app.logged_in { "已登录" } else { "未登录" };
-    let padded = format!("{left}{}", format!("{right:>width$}", width = area.width as usize));
+    
+    let left_width = left.width();
+    let right_width = right.width();
+    let total_width = area.width as usize;
+    
+    let space_count = total_width.saturating_sub(left_width + right_width);
+    let padded = format!("{}{}{}", left, " ".repeat(space_count), right);
 
     let header = Paragraph::new(padded)
         .style(Style::default().fg(app.ui.theme.header_fg).bg(app.ui.theme.header_bg));
