@@ -14,10 +14,12 @@ struct VideoInfoResponse {
 struct VideoInfoData {
     bvid: String,
     #[serde(default)]
+    #[allow(dead_code)]
     aid: u64,
     title: String,
     owner: VideoOwner,
     #[serde(default)]
+    #[allow(dead_code)]
     duration: u64,
     pic: Option<String>,
     #[serde(default)]
@@ -33,8 +35,10 @@ struct VideoOwner {
 struct VideoPage {
     cid: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     part: String,
     #[serde(default)]
+    #[allow(dead_code)]
     duration: u64,
 }
 
@@ -95,7 +99,8 @@ pub async fn get_video_pages(
     #[derive(Debug, Deserialize)]
     struct PageItem {
         cid: u64,
-        part: String,
+        #[allow(dead_code)]
+    part: String,
     }
 
     let resp: PagelistResponse = client

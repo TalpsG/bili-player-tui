@@ -202,10 +202,17 @@ impl App {
         // Spawn crossterm event reader task
         tokio::task::spawn_blocking(move || {
             loop {
-                if let Ok(CrosstermEvent::Key(key)) = crossterm::event::read() {
-                    if key_tx.send(key).is_err() {
-                        break;
+                // Poll for events with a short timeout to allow checking if the channel is still alive
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(500)) {
+                    if let Ok(CrosstermEvent::Key(key)) = crossterm::event::read() {
+                        if key_tx.send(key).is_err() {
+                            break;
+                        }
                     }
+                }
+                // If receiver dropped, exit loop
+                if key_tx.is_closed() {
+                    break;
                 }
             }
         });

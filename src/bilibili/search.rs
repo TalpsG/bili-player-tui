@@ -22,6 +22,7 @@ struct SearchItem {
     author: String,
     duration: String, // "3:45" format
     pic: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     page: u32,
 }

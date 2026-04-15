@@ -34,6 +34,7 @@ struct DashData {
 struct DashAudioItem {
     id: u32,
     base_url: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     backup_url: Option<Vec<String>>,
     bandwidth: u32,
@@ -54,6 +55,7 @@ struct FlacData {
 #[derive(Debug, Deserialize)]
 struct DurlItem {
     url: String,
+    #[allow(dead_code)]
     #[serde(default)]
     backup_url: Option<Vec<String>>,
 }

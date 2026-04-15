@@ -42,6 +42,7 @@ pub struct MpvBackend {
     cmd_tx: std::sync::mpsc::Sender<MpvCommand>,
     event_rx: mpsc::UnboundedReceiver<PlayerEvent>,
     state: Arc<Mutex<PlaybackState>>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl MpvBackend {
@@ -63,7 +64,7 @@ impl MpvBackend {
 
         // Spawn the mpv event thread
         let state_clone = state.clone();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             mpv_event_loop(mpv, cmd_rx, event_tx, state_clone);
         });
 
@@ -71,6 +72,7 @@ impl MpvBackend {
             cmd_tx,
             event_rx,
             state,
+            thread_handle: Some(handle),
         })
     }
 
@@ -136,8 +138,12 @@ impl MpvBackend {
     }
 
     /// Shutdown the mpv event thread. Called on app exit.
-    pub fn shutdown(&self) -> Result<(), AudioError> {
-        self.send_cmd(MpvCommand::Shutdown)
+    pub fn shutdown(&mut self) -> Result<(), AudioError> {
+        let _ = self.send_cmd(MpvCommand::Shutdown);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
+        Ok(())
     }
 }
 

@@ -27,6 +27,7 @@ async fn main() -> Result<()> {
             // TUI mode
             let mut app = bili_player_cli::app::App::new(config)?;
             app.run().await?;
+            std::process::exit(0);
         }
     }
 
