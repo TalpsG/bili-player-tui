@@ -31,7 +31,9 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, screen: Rect) {
     f.render_widget(input, chunks[0]);
 
     // Set cursor position in input
-    let cursor_x = chunks[0].x + 1 + 1 + app.search_query.len() as u16;
+    // Use unicode-width for CJK characters (each CJK char = 2 columns)
+    let query_width: usize = app.search_query.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+    let cursor_x = chunks[0].x + 1 + 1 + query_width as u16;
     let cursor_y = chunks[0].y + 1;
     f.set_cursor_position((cursor_x, cursor_y));
 

@@ -344,43 +344,94 @@ impl App {
                 self.focus_column = self.focus_column.prev(pv, dv);
             }
             Command::MoveCursorUp => {
-                self.move_cursor(-1);
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    if self.search_cursor > 0 {
+                        self.search_cursor -= 1;
+                    }
+                } else {
+                    self.move_cursor(-1);
+                }
             }
             Command::MoveCursorDown => {
-                self.move_cursor(1);
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    if self.search_cursor + 1 < self.search_results.len() {
+                        self.search_cursor += 1;
+                    }
+                } else {
+                    self.move_cursor(1);
+                }
             }
             Command::MoveCursorPageUp => {
-                self.move_cursor(-10);
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    self.search_cursor = self.search_cursor.saturating_sub(10);
+                } else {
+                    self.move_cursor(-10);
+                }
             }
             Command::MoveCursorPageDown => {
-                self.move_cursor(10);
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    self.search_cursor = (self.search_cursor + 10)
+                        .min(self.search_results.len().saturating_sub(1));
+                } else {
+                    self.move_cursor(10);
+                }
             }
             Command::MoveCursorTop => {
-                match self.focus_column {
-                    FocusColumn::TrackList => {
-                        if !self.queue.is_empty() {
-                            self.ui.track_list_cursor = 0;
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    self.search_cursor = 0;
+                } else {
+                    match self.focus_column {
+                        FocusColumn::TrackList => {
+                            if !self.queue.is_empty() {
+                                self.ui.track_list_cursor = 0;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             Command::MoveCursorBottom => {
-                match self.focus_column {
-                    FocusColumn::TrackList => {
-                        if !self.queue.is_empty() {
-                            self.ui.track_list_cursor = self.queue.len() - 1;
-                        }
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    if !self.search_results.is_empty() {
+                        self.search_cursor = self.search_results.len() - 1;
                     }
-                    _ => {}
+                } else {
+                    match self.focus_column {
+                        FocusColumn::TrackList => {
+                            if !self.queue.is_empty() {
+                                self.ui.track_list_cursor = self.queue.len() - 1;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             Command::PlaySelected => {
-                self.play_selected();
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    // Play selected search result
+                    if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                        let track = self.search_results[self.search_cursor].clone();
+                        self.queue.push(track.clone());
+                        let idx = self.queue.len() - 1;
+                        self.queue.jump_to(idx);
+                        self.play_track(track);
+                        // Close search after selecting
+                        self.input_mode = InputMode::Normal;
+                        self.hide_popup(PopupLayer::Search);
+                    }
+                } else {
+                    self.play_selected();
+                }
             }
             Command::AddToQueue => {
                 // Add from search results to queue
-                if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                if self.popup_stack.contains(&PopupLayer::Search) {
+                    if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                        let track = self.search_results[self.search_cursor].clone();
+                        self.queue.push(track);
+                        self.set_status("Added to queue".to_string());
+                    }
+                } else if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
                     let track = self.search_results[self.search_cursor].clone();
                     self.queue.push(track);
                     self.set_status("Added to queue".to_string());

@@ -27,21 +27,24 @@ pub fn key_to_command(
 }
 
 fn help_mode_keys(key: KeyEvent) -> Command {
-    match (key.modifiers, key.code) {
-        (KeyModifiers::NONE, KeyCode::Char('?')) => Command::CloseHelp,
-        (KeyModifiers::NONE, KeyCode::Esc) => Command::CloseHelp,
+    match key.code {
+        KeyCode::Char('?') | KeyCode::Esc => Command::CloseHelp,
         _ => Command::Noop,
     }
 }
 
 fn search_mode_keys(key: KeyEvent) -> Command {
-    match (key.modifiers, key.code) {
-        (KeyModifiers::NONE, KeyCode::Esc) => Command::CloseSearch,
-        (KeyModifiers::NONE, KeyCode::Enter) => Command::SearchSubmit,
-        (KeyModifiers::NONE, KeyCode::Backspace) => Command::SearchBackspace,
-        (KeyModifiers::NONE, KeyCode::Char(c)) => Command::SearchInput(c),
-        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => Command::MoveCursorUp,
-        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => Command::MoveCursorDown,
+    match key.code {
+        KeyCode::Esc => Command::CloseSearch,
+        KeyCode::Enter => Command::SearchSubmit,
+        KeyCode::Backspace => Command::SearchBackspace,
+        // All character input (including j/k which are text in search mode)
+        // Accept any modifier combination that produces a Char — tmux may report
+        // Shift+Char as NONE modifier with uppercase char
+        KeyCode::Char(c) => Command::SearchInput(c),
+        // Navigation: arrow keys only in search mode
+        KeyCode::Up => Command::MoveCursorUp,
+        KeyCode::Down => Command::MoveCursorDown,
         _ => Command::Noop,
     }
 }
