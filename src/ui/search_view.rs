@@ -1,10 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, InputMode};
 
 /// Draw search overlay: centered popup with input box + result list.
 pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
@@ -17,33 +17,50 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
+    let is_input_mode = app.input_mode == InputMode::SearchInput;
+    let mode_str = match app.input_mode {
+        InputMode::SearchInput => " -- INSERT -- ",
+        InputMode::SearchNormal => " -- NORMAL -- ",
+        _ => "",
+    };
+
     // Draw input box
     let input_text = format!("/{}", app.search_query);
+    let input_title = format!("Search{}", mode_str);
+    
+    let input_border_style = if app.search_focus_input {
+        app.ui.theme.focused_border
+    } else {
+        app.ui.theme.unfocused_border
+    };
+
     let input = Paragraph::new(input_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Search")
-                .style(app.ui.theme.popup_border),
+                .title(input_title)
+                .border_style(input_border_style),
         )
         .style(app.ui.theme.search_input);
     f.render_widget(input, chunks[0]);
 
-    // Set cursor position in input
-    // Use unicode-width for CJK characters (each CJK char = 2 columns)
-    let query_width: usize = app.search_query.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
-    let cursor_x = chunks[0].x + 1 + 1 + query_width as u16;
-    let cursor_y = chunks[0].y + 1;
-    f.set_cursor_position((cursor_x, cursor_y));
-
     // Draw results list
+    let results_border_style = if !app.search_focus_input {
+        app.ui.theme.focused_border
+    } else {
+        app.ui.theme.unfocused_border
+    };
+
     let items: Vec<ListItem> = app
         .search_results
         .iter()
         .enumerate()
         .map(|(i, track)| {
-            let style = if i == app.search_cursor {
-                Style::default().bg(Color::Blue).fg(Color::White)
+            let is_selected = i == app.search_cursor;
+            let style = if is_selected && !app.search_focus_input {
+                Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
             } else {
                 Style::default()
             };
@@ -60,7 +77,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             } else {
                 "Results"
             })
-            .style(app.ui.theme.popup_border),
+            .border_style(results_border_style),
     );
 
     let mut state = ListState::default();
@@ -68,4 +85,20 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         state.select(Some(app.search_cursor));
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
+
+    // Set cursor position
+    if app.search_focus_input {
+        // Use unicode-width for CJK characters
+        let query_prefix: String = app.search_query.chars().take(app.search_query_cursor).collect();
+        let query_width: usize = query_prefix.chars()
+            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum();
+        
+        let cursor_x = chunks[0].x + 1 + 1 + query_width as u16;
+        let cursor_y = chunks[0].y + 1;
+        
+        // In Normal mode on input, we might want a different cursor look, 
+        // but terminal cursor is usually a block or line.
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }

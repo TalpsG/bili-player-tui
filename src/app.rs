@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crossterm::{
-    event::{Event as CrosstermEvent, KeyEvent},
+    event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use crate::bilibili::api::BilibiliClient;
 use crate::bilibili::search::search_videos;
 use crate::bilibili::stream::get_audio_stream;
+use crate::bilibili::video::get_video_info;
 use crate::command::Command;
 use crate::config::Config;
 use crate::event::PlayerEvent;
@@ -24,6 +25,7 @@ use crate::ui::Ui;
 pub enum InputMode {
     Normal,
     SearchInput,
+    SearchNormal,
 }
 
 /// Which column has keyboard focus.
@@ -100,6 +102,8 @@ pub struct App {
 
     // Search state
     pub search_query: String,
+    pub search_query_cursor: usize,
+    pub search_focus_input: bool,
     pub search_results: Vec<Track>,
     pub search_cursor: usize,
     pub searching: bool,
@@ -123,7 +127,7 @@ pub struct App {
     pub logged_in: bool,
 
     // Shutdown flag
-    pub should_quit: bool,
+    should_quit: bool,
 
     // Terminal size
     pub terminal_width: u16,
@@ -151,6 +155,8 @@ impl App {
             input_mode: InputMode::Normal,
             focus_column: FocusColumn::TrackList,
             search_query: String::new(),
+            search_query_cursor: 0,
+            search_focus_input: true,
             search_results: Vec::new(),
             search_cursor: 0,
             searching: false,
@@ -346,8 +352,14 @@ impl App {
             }
             Command::MoveCursorUp => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if self.search_cursor > 0 {
-                        self.search_cursor -= 1;
+                    if self.search_focus_input {
+                        // Already at top
+                    } else {
+                        if self.search_cursor == 0 {
+                            self.search_focus_input = true;
+                        } else {
+                            self.search_cursor -= 1;
+                        }
                     }
                 } else {
                     self.move_cursor(-1);
@@ -355,11 +367,32 @@ impl App {
             }
             Command::MoveCursorDown => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if self.search_cursor + 1 < self.search_results.len() {
-                        self.search_cursor += 1;
+                    if self.search_focus_input {
+                        if !self.search_results.is_empty() {
+                            self.search_focus_input = false;
+                            self.search_cursor = 0;
+                        }
+                    } else {
+                        if self.search_cursor + 1 < self.search_results.len() {
+                            self.search_cursor += 1;
+                        }
                     }
                 } else {
                     self.move_cursor(1);
+                }
+            }
+            Command::MoveCursorLeft => {
+                if self.popup_stack.contains(&PopupLayer::Search) && self.search_focus_input {
+                    if self.search_query_cursor > 0 {
+                        self.search_query_cursor -= 1;
+                    }
+                }
+            }
+            Command::MoveCursorRight => {
+                if self.popup_stack.contains(&PopupLayer::Search) && self.search_focus_input {
+                    if self.search_query_cursor < self.search_query.chars().count() {
+                        self.search_query_cursor += 1;
+                    }
                 }
             }
             Command::MoveCursorPageUp => {
@@ -379,6 +412,7 @@ impl App {
             }
             Command::MoveCursorTop => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
+                    self.search_focus_input = true;
                     self.search_cursor = 0;
                 } else {
                     match self.focus_column {
@@ -394,6 +428,7 @@ impl App {
             Command::MoveCursorBottom => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
                     if !self.search_results.is_empty() {
+                        self.search_focus_input = false;
                         self.search_cursor = self.search_results.len() - 1;
                     }
                 } else {
@@ -409,14 +444,16 @@ impl App {
             }
             Command::PlaySelected => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    // Play selected search result
-                    if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                    if self.search_focus_input {
+                        // Enter in input field (Normal mode) re-submits search
+                        self.handle_command(Command::SearchSubmit);
+                    } else if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                        // Play selected search result
                         let track = self.search_results[self.search_cursor].clone();
                         self.queue.push(track.clone());
                         let idx = self.queue.len() - 1;
                         self.queue.jump_to(idx);
                         self.play_track(track);
-                        // Close search after selecting
                         self.input_mode = InputMode::Normal;
                         self.hide_popup(PopupLayer::Search);
                     }
@@ -425,17 +462,12 @@ impl App {
                 }
             }
             Command::AddToQueue => {
-                // Add from search results to queue
                 if self.popup_stack.contains(&PopupLayer::Search) {
                     if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
                         let track = self.search_results[self.search_cursor].clone();
                         self.queue.push(track);
                         self.set_status("Added to queue".to_string());
                     }
-                } else if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
-                    let track = self.search_results[self.search_cursor].clone();
-                    self.queue.push(track);
-                    self.set_status("Added to queue".to_string());
                 }
             }
             Command::RemoveFromQueue => {
@@ -452,19 +484,44 @@ impl App {
             Command::OpenSearch => {
                 self.input_mode = InputMode::SearchInput;
                 self.search_query.clear();
+                self.search_query_cursor = 0;
                 self.search_results.clear();
                 self.search_cursor = 0;
+                self.search_focus_input = true;
                 self.show_popup(PopupLayer::Search);
             }
             Command::CloseSearch => {
                 self.input_mode = InputMode::Normal;
                 self.hide_popup(PopupLayer::Search);
             }
+            Command::EnterSearchInput => {
+                self.input_mode = InputMode::SearchInput;
+                self.search_focus_input = true;
+            }
+            Command::EnterSearchAppend => {
+                self.input_mode = InputMode::SearchInput;
+                self.search_focus_input = true;
+                if self.search_query_cursor < self.search_query.chars().count() {
+                    self.search_query_cursor += 1;
+                }
+            }
             Command::SearchInput(c) => {
-                self.search_query.push(c);
+                let char_idx = self.search_query_cursor;
+                if char_idx >= self.search_query.chars().count() {
+                    self.search_query.push(c);
+                } else {
+                    let byte_idx = self.search_query.char_indices().nth(char_idx).map(|(i, _)| i).unwrap_or(self.search_query.len());
+                    self.search_query.insert(byte_idx, c);
+                }
+                self.search_query_cursor += 1;
             }
             Command::SearchBackspace => {
-                self.search_query.pop();
+                if self.search_query_cursor > 0 {
+                    let char_idx = self.search_query_cursor - 1;
+                    let byte_idx = self.search_query.char_indices().nth(char_idx).map(|(i, _)| i).unwrap_or(0);
+                    self.search_query.remove(byte_idx);
+                    self.search_query_cursor -= 1;
+                }
             }
             Command::SearchSubmit => {
                 let query = self.search_query.clone();
@@ -473,7 +530,6 @@ impl App {
                     let client = self.client.clone();
                     let (result_tx, result_rx) = mpsc::unbounded_channel();
 
-                    // Spawn async search task
                     tokio::spawn(async move {
                         let result = search_videos(&client, &query, 1).await;
                         let _ = result_tx.send(result);
@@ -506,7 +562,6 @@ impl App {
                     self.set_status(format!("Failed to get audio: {e}"));
                 }
                 Err(_) => {
-                    // Not ready yet, put it back
                     self.pending_stream = Some((track, rx));
                 }
             }
@@ -521,14 +576,21 @@ impl App {
                         Ok(tracks) => {
                             self.search_results = tracks;
                             self.search_cursor = 0;
+                            // Search successful, enter Normal mode for selection
+                            self.input_mode = InputMode::SearchNormal;
+                            // If results exist, move focus to results by default
+                            if !self.search_results.is_empty() {
+                                self.search_focus_input = false;
+                            }
                         }
                         Err(e) => {
                             self.set_status(format!("Search failed: {e}"));
+                            // Keep in Input mode on failure
+                            self.input_mode = InputMode::SearchInput;
                         }
                     }
                 }
                 Err(_) => {
-                    // Not ready yet, put it back
                     self.search_result_rx = Some(rx);
                 }
             }
@@ -549,7 +611,6 @@ impl App {
         match event {
             PlayerEvent::TrackEnded { reason } => {
                 if reason == 0 {
-                    // Normal EOF, play next
                     if let Some(track) = self.queue.next() {
                         let track = track.clone();
                         self.play_track(track);
@@ -561,9 +622,7 @@ impl App {
                     self.is_playing = false;
                 }
             }
-            PlayerEvent::SeekCompleted => {
-                // Position will be updated on next tick via cache
-            }
+            PlayerEvent::SeekCompleted => {}
             PlayerEvent::Shutdown => {
                 self.should_quit = true;
             }
@@ -622,7 +681,6 @@ impl App {
         if !self.popup_stack.contains(&layer) {
             self.popup_stack.push(layer);
         } else if layer == PopupLayer::VolumeSlider {
-            // Refresh auto-dismiss timer
             self.volume_popup_time = Some(std::time::Instant::now());
         }
     }
@@ -643,7 +701,6 @@ impl App {
     }
 
     fn column_visibility(&self) -> (bool, bool) {
-        // (playlist_visible, detail_visible)
         if self.terminal_width >= 80 {
             (true, true)
         } else if self.terminal_width >= 50 {
@@ -663,20 +720,15 @@ impl App {
         let (header, body, status) = crate::ui::layout::main_layout(area);
         let (playlist, track_list, detail) = crate::ui::layout::body_columns(body, visibility);
 
-        // Draw header and status (only need &App)
         crate::ui::draw_header(f, self, header);
         crate::ui::draw_status_bar(f, self, status);
 
-        // Draw columns that only need &App
         crate::ui::playlist_view::draw(f, self, playlist);
         crate::ui::now_playing::draw(f, self, detail);
 
-        // Draw track_list and search_view which need &mut Ui
-        // Temporarily take ui out to avoid borrow conflict
         let mut ui = std::mem::take(&mut self.ui);
         crate::ui::track_list::draw(f, self, &mut ui, track_list);
 
-        // Draw popups
         if self.popup_stack.contains(&PopupLayer::VolumeSlider) {
             crate::ui::volume_slider::draw(f, self, area);
         }

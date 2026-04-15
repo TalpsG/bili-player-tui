@@ -29,7 +29,11 @@ pub enum Command {
     SearchInput(char),
     SearchBackspace,
     SearchSubmit,
+    MoveCursorLeft,
+    MoveCursorRight,
     OpenHelp,
     CloseHelp,
+    EnterSearchInput,
+    EnterSearchAppend,
     Noop,
 }

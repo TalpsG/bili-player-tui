@@ -18,12 +18,16 @@ pub fn key_to_command(
 
     // If Search popup is active, handle search input
     if popup_stack.contains(&PopupLayer::Search) {
-        return search_mode_keys(key, search_results_len);
+        return match mode {
+            InputMode::SearchInput => search_input_mode_keys(key),
+            InputMode::SearchNormal => search_normal_mode_keys(key, search_results_len),
+            _ => Command::Noop,
+        };
     }
 
     match mode {
         InputMode::Normal => normal_mode_keys(key, focus),
-        InputMode::SearchInput => search_mode_keys(key, search_results_len),
+        _ => Command::Noop,
     }
 }
 
@@ -34,25 +38,30 @@ fn help_mode_keys(key: KeyEvent) -> Command {
     }
 }
 
-fn search_mode_keys(key: KeyEvent, search_results_len: usize) -> Command {
+fn search_input_mode_keys(key: KeyEvent) -> Command {
     match key.code {
         KeyCode::Esc => Command::CloseSearch,
-        // Enter: play selected if results exist, otherwise submit search
-        KeyCode::Enter => {
-            if search_results_len > 0 {
-                Command::PlaySelected
-            } else {
-                Command::SearchSubmit
-            }
-        }
+        KeyCode::Enter => Command::SearchSubmit,
         KeyCode::Backspace => Command::SearchBackspace,
-        // All character input (including j/k which are text in search mode)
-        // Accept any modifier combination that produces a Char — tmux may report
-        // Shift+Char as NONE modifier with uppercase char
         KeyCode::Char(c) => Command::SearchInput(c),
-        // Navigation: arrow keys only in search mode
-        KeyCode::Up => Command::MoveCursorUp,
-        KeyCode::Down => Command::MoveCursorDown,
+        _ => Command::Noop,
+    }
+}
+
+fn search_normal_mode_keys(key: KeyEvent, search_results_len: usize) -> Command {
+    match key.code {
+        KeyCode::Esc => Command::CloseSearch,
+        KeyCode::Enter => {
+            // Enter in search normal always means "play" if focused on results,
+            // or "search" if focused on input (this is handled in app.rs based on focus state)
+            Command::PlaySelected
+        }
+        KeyCode::Char('i') => Command::EnterSearchInput,
+        KeyCode::Char('a') => Command::EnterSearchAppend,
+        KeyCode::Char('h') | KeyCode::Left => Command::MoveCursorLeft,
+        KeyCode::Char('l') | KeyCode::Right => Command::MoveCursorRight,
+        KeyCode::Char('j') | KeyCode::Down => Command::MoveCursorDown,
+        KeyCode::Char('k') | KeyCode::Up => Command::MoveCursorUp,
         _ => Command::Noop,
     }
 }
