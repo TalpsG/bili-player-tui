@@ -55,13 +55,16 @@ src/
 │   └── storage.rs     #   JSON 持久化
 │
 ├── ui/                # TUI 渲染
-│   ├── mod.rs         #   UI 结构体 + draw()
-│   ├── layout.rs      #   布局定义
-│   ├── playlist_view.rs
-│   ├── now_playing.rs
-│   ├── controls.rs
-│   ├── search_view.rs
-│   └── theme.rs
+│   ├── mod.rs         #   Ui struct + draw()
+│   ├── layout.rs      #   三栏布局 + 窄终端自适应
+│   ├── popup.rs       #   Popup overlay 系统 (z-order, anchor)
+│   ├── playlist_view.rs #  左栏: 歌单列表
+│   ├── track_list.rs  #   中栏: 曲目列表
+│   ├── now_playing.rs #   右栏: 曲目详情 (P2+ 封面图)
+│   ├── search_view.rs #   搜索 overlay (popup)
+│   ├── help_view.rs   #   帮助 overlay (popup)
+│   ├── volume_slider.rs # 音量滑钮 overlay (popup)
+│   └── theme.rs       #   暗色主题
 │
 └── cover/             # 封面图
     ├── mod.rs         #   CoverManager + LRU 缓存
@@ -89,6 +92,50 @@ trait AudioBackend: Send + Sync {
     fn volume(&self) -> u16;
 }
 ```
+
+### TUI 布局系统
+
+Yazi/ranger 风格三栏布局，Painter's algorithm popup overlay。
+
+```
+┌─────────────────────────────────────────────────────┐
+│ bili-player-cli                          未登录/用户名 │  ← Header (1行)
+├──────────┬──────────────────────┬────────────────────┤
+│ 歌单列表  │    曲目列表           │   曲目详情          │
+│ ▸ 队列   │  ▸ 歌曲A  超爱大可乐  │   歌曲A            │
+│          │    歌曲B   周杰伦      │   作者: 超爱大可乐  │
+│          │                      │   时长: 4:25       │
+│          │                      │   音质: Hi-Res     │
+├──────────┴──────────────────────┴────────────────────┤
+│ [════════════════════▶               ] 1:23/4:25 🔊80 │  ← Status (1行)
+└─────────────────────────────────────────────────────┘
+```
+
+**三栏比例**: `Constraint::Ratio(1, 3, 2)` — 歌单 | 曲目 | 详情
+
+**Header**: 左 `bili-player-cli`，右登录状态 (`未登录` / 用户名)
+
+**Status**: 1 行，Gauge 进度条 + 当前时间/总时长 + 🔊音量值
+
+**窄终端自适应**:
+- ≥80 列: 三栏 `[1, 3, 2]`
+- 50-79 列: 隐藏右栏 `[1, 1, 0]`
+- <50 列: 仅中栏 `[0, 1, 0]`
+
+### Popup Overlay 系统
+
+每个 popup 接收全屏区域，自行定位。按 z-order 层叠渲染。
+
+| Z-order | Popup | 触发 | 定位 |
+|---------|-------|------|------|
+| 0 | 主布局 | 默认 | 全屏 |
+| 1 | 音量滑钮 | `↑`/`↓` 调音量 | 状态栏上方居中，自动消失 |
+| 2 | 搜索 | `/` | 居中，含输入框+结果列表 |
+| 3 | 帮助 | `?` | 全屏 |
+
+**Popup anchor**: 每个 popup 通过 anchor 点 + offset 确定位置 (top-center, center, hovered 等)。
+
+**输入模式**: Normal (默认) → Search Input (按 `/`) → Normal (按 `Esc`/`Enter`)
 
 ### 状态所有权
 
@@ -164,16 +211,19 @@ trait AudioBackend: Send + Sync {
 - `command.rs`: Command enum
 - `event.rs`: Event enum + PlayerEvent
 - `ui/` 完整实现:
-  - `mod.rs`: UI 结构体 + draw()
-  - `layout.rs`: 主布局 (左队列 + 右正在播放 + 底进度条)
-  - `playlist_view.rs`: 队列列表 (List widget)
-  - `now_playing.rs`: 曲目信息 (文字，无封面图)
-  - `controls.rs`: 进度条 (Gauge) + 快捷键提示
-  - `search_view.rs`: / 键搜索输入 + 结果列表
+  - `mod.rs`: Ui struct + draw()，popup z-order 渲染
+  - `layout.rs`: 三栏布局 (歌单 | 曲目 | 详情) + Header + Status + 窄终端自适应
+  - `popup.rs`: Popup overlay 系统 (anchor 定位 + z-order)
+  - `playlist_view.rs`: 左栏歌单列表 (P1 仅"队列")
+  - `track_list.rs`: 中栏曲目列表
+  - `now_playing.rs`: 右栏曲目详情 (文字，P2+ 封面图)
+  - `search_view.rs`: 搜索 overlay (居中 popup，输入框+结果列表)
+  - `help_view.rs`: 帮助 overlay (全屏快捷键列表)
+  - `volume_slider.rs`: 音量滑钮 overlay (状态栏上方居中，自动消失)
   - `theme.rs`: 基础暗色主题
 - `queue/mod.rs`: Queue (顺序播放 + 上下曲)
 - `player/mpv.rs`: 完整实现 (mpv 事件线程 + play/pause/seek/volume + position/duration)
-- SESSDATA 未配置/无效提示 (状态栏)
+- SESSDATA 未配置/无效提示 (Header 右侧)
 - 帮助页面 (? 键)
 - 所有播放控制快捷键
 - **单元测试**: Queue 操作、Command 处理
@@ -198,6 +248,7 @@ trait AudioBackend: Send + Sync {
   - `mod.rs`: CoverManager (异步获取 + LRU 缓存)
   - `protocol.rs`: ratatui-image Picker 初始化
 - `ui/now_playing.rs`: 封面图显示 (StatefulImage widget)
+- `ui/playlist_view.rs`: 左栏歌单列表 (多个歌单 + 队列)
 - `bilibili/favorite.rs`: 收藏夹导入 (输入 ID)
 - BV 号/URL 直接播放 (搜索框识别)
 - **单元测试**: 歌单 CRUD、持久化、Shuffle/Repeat
@@ -212,12 +263,13 @@ trait AudioBackend: Send + Sync {
 **目标**: 交互细节和边缘场景处理。
 
 - 中文对齐 (unicode-width)
-- 窗口缩放自适应完善
+- 窄终端布局自适应完善
 - 音量归一化 (player/normalize.rs, mpv `af=lavfi=[loudnorm]`)
 - 帮助页面完善 (完整快捷键 + 分组)
 - 登录状态显示 + SESSDATA 启动验证
 - 网络错误重试 + 状态栏错误提示完善
-- 跳转到指定位置 (进度条交互)
+- 进度条交互 (点击跳转)
+- 音量滑钮自动消失定时器
 
 ---
 
