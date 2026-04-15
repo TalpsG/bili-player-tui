@@ -269,6 +269,12 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // If VolumeSlider is the top popup, Esc should close it
+        if self.popup_stack.last() == Some(&PopupLayer::VolumeSlider) && key.code == KeyCode::Esc {
+            self.hide_popup(PopupLayer::VolumeSlider);
+            return;
+        }
+
         let cmd = crate::ui::controls::key_to_command(
             key,
             self.input_mode,

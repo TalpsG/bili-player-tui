@@ -33,7 +33,7 @@ pub fn key_to_command(
 
 fn help_mode_keys(key: KeyEvent) -> Command {
     match key.code {
-        KeyCode::Char('?') | KeyCode::Esc => Command::CloseHelp,
+        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => Command::CloseHelp,
         _ => Command::Noop,
     }
 }
@@ -50,7 +50,7 @@ fn search_input_mode_keys(key: KeyEvent) -> Command {
 
 fn search_normal_mode_keys(key: KeyEvent, search_results_len: usize) -> Command {
     match key.code {
-        KeyCode::Esc => Command::CloseSearch,
+        KeyCode::Esc | KeyCode::Char('q') => Command::CloseSearch,
         KeyCode::Enter => {
             // Enter in search normal always means "play" if focused on results,
             // or "search" if focused on input (this is handled in app.rs based on focus state)

@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Gauge};
+use ratatui::widgets::{Block, Borders, Clear, Gauge};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -31,5 +31,6 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .ratio(app.volume as f64 / 100.0)
         .label(label);
 
+    f.render_widget(Clear, area);
     f.render_widget(gauge, area);
 }

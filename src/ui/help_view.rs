@@ -1,18 +1,22 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 use ratatui::Frame;
 
 use crate::app::App;
 
-/// Draw help overlay: full-screen keybinding reference.
+/// Draw help overlay: centered popup with keybinding reference.
 pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
+    // Determine size (80% of screen but not too small)
+    let width = (screen.width as f32 * 0.8) as u16;
+    let height = (screen.height as f32 * 0.8) as u16;
+    
     let area = super::popup::popup_area(
         screen,
-        super::popup::Anchor::FullScreen,
-        screen.width,
-        screen.height,
+        super::popup::Anchor::Center,
+        width.max(50),
+        height.max(15),
     );
 
     let keybindings: &[(&str, &str)] = &[
@@ -49,12 +53,14 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Keybindings (press ? or Esc to close)")
-            .style(app.ui.theme.popup_border),
-    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Keybindings (press q, ? or Esc to close) ")
+        .style(app.ui.theme.popup_border);
 
+    let list = List::new(items).block(block);
+
+    // Clear background to avoid overlapping lower level content
+    f.render_widget(Clear, area);
     f.render_widget(list, area);
 }

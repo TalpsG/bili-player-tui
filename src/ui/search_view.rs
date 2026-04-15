@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, InputMode};
@@ -11,6 +11,9 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let width = 60u16.min(screen.width.saturating_sub(4));
     let height = 20u16.min(screen.height.saturating_sub(4));
     let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
+
+    // Clear the background
+    f.render_widget(Clear, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
