@@ -61,7 +61,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .map(|(i, track)| {
             let is_selected = i == app.search_cursor;
             let style = if is_selected && !app.search_focus_input {
-                Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+                app.ui.theme.focused_item.add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
             } else {
