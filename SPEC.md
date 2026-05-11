@@ -109,7 +109,7 @@ bili-player-cli 是一个终端音乐播放器，播放来自 Bilibili 视频的
 | T-7 | 音量滑钮 overlay | P0 | 状态栏上方居中，`↑`/`↓` 调音量时弹出，自动消失 |
 | T-8 | 窄终端自适应 | P0 | ≥80 列三栏，50-79 列两栏，<50 列仅中栏 |
 | T-9 | 封面图显示 ✅ | P1 | 右栏曲目详情区，StatefulImage widget，Sixel/Kitty/iTerm2/Halfblocks，占上半部分高度，含磁盘 LRU 缓存 |
-| T-10 | 颜色主题 | P2 | 支持切换 dark/light 等主题 |
+| T-10 | 颜色主题配置 | P3 | `config.toml` 中 `[theme]` 子表，各颜色字段均可独立覆盖；支持命名色（`cyan`）及 hex（`#RRGGBB`）；未配置字段 fallback 到内置默认值。可配字段包括：`cursor_bg`/`cursor_fg`（光标高亮）、`playing_item`（正在播放曲目颜色）、`focused_border`/`unfocused_border`（边框）、`text_primary`/`text_secondary`（文字）、`popup_border`、`header_bg`/`header_fg`、`status_bg`/`status_fg`、`gauge_filled`、`search_input` |
 | T-11 | 中文对齐 | P1 | CJK 字符正确计算宽度 |
 | T-12 | 创建歌单 popup | P0 | 居中输入框，`c` 触发，Enter 确认，Esc 取消 |
 | T-13 | 删除歌单确认 popup | P0 | 居中确认框，红色边框，显示歌单名，Enter/y 删除，Esc/n 取消 |

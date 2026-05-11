@@ -288,6 +288,10 @@ Normal
 - 网络错误重试 + 状态栏错误提示完善
 - 进度条交互 (点击跳转)
 - 音量滑钮自动消失定时器
+- **颜色主题配置** (`config.toml` 中 `[theme]` 子表，各字段均可独立覆盖，未配置字段 fallback 到内置默认值)
+  - 可配字段: `focused_border`, `unfocused_border`, `cursor_bg`, `cursor_fg`, `playing_item`, `text_primary`, `text_secondary`, `popup_border`, `header_bg`, `header_fg`, `status_bg`, `status_fg`, `gauge_filled`, `search_input`
+  - 颜色值格式: 命名色 (`cyan`, `darkgray`...) 或 hex (`#RRGGBB`)
+  - 实现: `config.rs` 中增加 `ThemeConfig` 结构体 (全字段 `Option<String>`)，`Config::load()` 后调用 `ThemeConfig::into_theme()` 生成 `Theme`
 
 ---
 
@@ -298,7 +302,6 @@ Normal
 | 搜索翻页 | 加载更多搜索结果 |
 | 搜索历史 | 记录最近搜索词 |
 | 快捷键自定义 | 用户可重映射按键 |
-| 颜色主题 | dark/light 等主题切换 |
 | 导入 UP 主视频列表 | 按 UP 主 mid 批量导入 |
 | 重命名歌单 | |
 | 歌单导入/导出 | 导出为 JSON 文件，导入从 JSON 文件恢复 |

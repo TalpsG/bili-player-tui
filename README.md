@@ -12,12 +12,12 @@ A terminal-based Bilibili audio player — search, browse, and play, all from yo
 
 ## 灵感来源
 
-做这个项目的起点是两款让我念念不忘的音乐 App：
+两个同样针对 Bilibili 的第三方音频播放器项目让我产生了做终端版本的想法：
 
-- **Azusa** — iOS/macOS 上清爽而精致的音乐播放器，界面干净，歌单管理流畅，用过就很难回头。
-- **Nox Player** — Android 上的老牌本地音乐播放器，专辑封面、本地库管理、操作手感都很有质感。
+- **[Azusa](https://github.com/kenmingwang/azusa-player)** — 浏览器扩展，将 B 站视频转换为纯音频播放，支持歌单管理和歌词搜索。
+- **[NoxPlayer](https://github.com/lovegaoshi/NoxPlayer)** — 同样是面向 B 站的浏览器扩展播放器，支持 YouTube，有歌单云备份、音量归一化等功能，并有配套移动端。
 
-一直想在终端里拥有类似的体验——列表导航丝滑、封面图显示、歌单随手管理——只不过换成 Bilibili 上海量的音乐视频和投稿。于是就有了这个项目。
+两者都在浏览器环境里做得很完整，但没有终端版本。bili-player-cli 是对"在终端里做同一件事"的尝试——列表导航、封面显示、歌单管理，只是运行在 shell 里。
 
 ---
 

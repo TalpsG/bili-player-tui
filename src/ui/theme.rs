@@ -27,7 +27,7 @@ impl Default for Theme {
             focused_border: Style::default().fg(Color::Cyan),
             unfocused_border: Style::default().fg(Color::DarkGray),
             selected_item: Style::default().fg(Color::Green),
-            focused_item: Style::default().bg(Color::Blue).fg(Color::White),
+            focused_item: Style::default().bg(Color::Cyan).fg(Color::Black),
             gauge_filled: Style::default().fg(Color::Cyan).bg(Color::DarkGray),
             gauge_unfilled: Style::default().fg(Color::DarkGray).bg(Color::Black),
             popup_border: Style::default().fg(Color::Cyan),
