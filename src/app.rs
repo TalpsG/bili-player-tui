@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crossterm::{
-    event::{Event as CrosstermEvent, KeyCode, KeyEvent},
+    event::{EnableFocusChange, DisableFocusChange, Event as CrosstermEvent, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -14,10 +14,14 @@ use crate::bilibili::stream::get_audio_stream;
 use crate::bilibili::video::get_video_info;
 use crate::command::Command;
 use crate::config::Config;
+use crate::cover::CoverManager;
 use crate::event::PlayerEvent;
 use crate::player::mpv::MpvBackend;
+use crate::playlist::Playlist;
+use crate::playlist::storage::PlaylistStore;
 use crate::queue::Queue;
 use crate::queue::track::Track;
+use crate::state::AppState;
 use crate::ui::Ui;
 
 /// Input mode for key handling.
@@ -80,6 +84,9 @@ pub enum PopupLayer {
     VolumeSlider,
     Search,
     Help,
+    PlaylistCreate,        // input popup for playlist name
+    PlaylistDeleteConfirm, // confirm popup before deletion
+    AddToPlaylist,         // list-chooser popup for adding track to playlist
 }
 
 /// The App is the sole state owner.
@@ -94,6 +101,19 @@ pub struct App {
 
     // Queue
     pub queue: Queue,
+
+    // Playlists
+    /// User-created playlists. Index 0 absent here; playlist_cursor==0 maps to self.queue.
+    pub playlists: Vec<Playlist>,
+    /// Which row is selected in the left (playlist) column.
+    /// 0 = Queue (virtual), 1..=N = playlists[0..N-1].
+    pub playlist_cursor: usize,
+    /// Buffer accumulating characters in the CreatePlaylist popup.
+    pub playlist_name_input: String,
+    /// Cursor in the add-to-playlist chooser popup (0=Queue, 1..N=playlists).
+    pub add_to_playlist_cursor: usize,
+    /// Track staged for "add to playlist" operation (set when AddToPlaylistOpen fires).
+    pub add_to_playlist_track: Option<Track>,
 
     // UI state
     pub ui: Ui,
@@ -136,21 +156,68 @@ pub struct App {
     // Async state receivers
     pub search_result_rx: Option<mpsc::UnboundedReceiver<Result<Vec<Track>, crate::error::BilibiliError>>>,
     pub pending_stream: Option<(Track, mpsc::UnboundedReceiver<Result<crate::queue::track::TrackSource, crate::error::BilibiliError>>)>,
+    /// Pending BV fetch: resolves video info for a directly-entered BV ID / URL.
+    pub pending_bv_fetch: Option<mpsc::UnboundedReceiver<Result<Track, crate::error::BilibiliError>>>,
+
+    // Cover image manager (None if terminal doesn't support graphics)
+    pub cover_manager: Option<CoverManager>,
+
+    /// Set to `true` to force `terminal.clear()` before the next draw.
+    /// Used by Ctrl+L (manual redraw) and automatic tmux focus-regain handling.
+    pub force_redraw: bool,
+}
+
+/// Extract a BV ID from a raw query string.
+///
+/// Accepts:
+/// - Bare BV ID: `BV1xx411c7mD`
+/// - Full URL: `https://www.bilibili.com/video/BV1xx411c7mD`
+/// - Short URL or query string containing `BV...`
+///
+/// Returns `None` if no BV ID pattern found.
+fn extract_bvid(query: &str) -> Option<String> {
+    // BV IDs are exactly "BV" followed by 10 alphanumeric characters.
+    let q = query.trim();
+    // Walk through the string looking for "BV" followed by 10 alnum chars.
+    let bytes = q.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i + 12 <= len {
+        if bytes[i] == b'B' && bytes[i + 1] == b'V' {
+            let tail = &bytes[i + 2..i + 12];
+            if tail.iter().all(|b| b.is_ascii_alphanumeric()) {
+                // Make sure the char after (if any) is not alphanumeric (word boundary)
+                let after_ok = i + 12 >= len || !bytes[i + 12].is_ascii_alphanumeric();
+                if after_ok {
+                    return Some(q[i..i + 12].to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 impl App {
-    pub fn new(config: Config) -> anyhow::Result<Self> {
+    pub fn new(config: Config, picker: Option<ratatui_image::picker::Picker>) -> anyhow::Result<Self> {
         let logged_in = !config.bilibili.sessdata.is_empty();
         let client = BilibiliClient::new(Some(config.bilibili.sessdata.clone()));
         let mut player = MpvBackend::new()?;
         let volume = config.player.volume;
         player.set_volume(volume);
 
-        Ok(Self {
+        let mut app = Self {
             config,
             client,
             player,
             queue: Queue::new(),
+            playlists: PlaylistStore::load()
+                .map(|s| s.playlists)
+                .unwrap_or_default(),
+            playlist_cursor: 0,
+            playlist_name_input: String::new(),
+            add_to_playlist_cursor: 0,
+            add_to_playlist_track: None,
             ui: Ui::new(),
             input_mode: InputMode::Normal,
             focus_column: FocusColumn::TrackList,
@@ -175,7 +242,31 @@ impl App {
             terminal_height: 24,
             search_result_rx: None,
             pending_stream: None,
-        })
+            pending_bv_fetch: None,
+            cover_manager: picker.map(CoverManager::new),
+            force_redraw: false,
+        };
+
+        // Prewarm cover cache for all known tracks so L1 is populated from disk
+        // (or network) immediately on startup rather than waiting for first render.
+        if let Some(ref mut mgr) = app.cover_manager {
+            // Prewarm queue tracks
+            for track in app.queue.tracks() {
+                if let Some(url) = &track.cover_url {
+                    mgr.prewarm(url);
+                }
+            }
+            // Prewarm playlist tracks
+            for pl in &app.playlists {
+                for track in &pl.tracks {
+                    if let Some(url) = &track.cover_url {
+                        mgr.prewarm(url);
+                    }
+                }
+            }
+        }
+
+        Ok(app)
     }
 
     /// Run the TUI main loop.
@@ -183,31 +274,43 @@ impl App {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableFocusChange)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         terminal.clear()?;
+
+        // Enable tmux focus-events so FocusGained is forwarded to us when the
+        // user switches back to this tmux window.  This is the tmux side-channel;
+        // crossterm's EnableFocusChange sends \033[?1004h to the terminal, but
+        // inside tmux that only works if tmux itself has `focus-events on`.
+        // We temporarily enable it and restore the old value on exit.
+        let tmux_focus_was_on = enable_tmux_focus_events();
 
         // Set up panic hook to restore terminal
         let panic_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableFocusChange);
             panic_hook(info);
         }));
 
         // Event channels
-        let (key_tx, mut key_rx) = mpsc::unbounded_channel();
+        let (key_tx, mut key_rx) = mpsc::unbounded_channel::<CrosstermEvent>();
 
         // Spawn crossterm event reader task
         tokio::task::spawn_blocking(move || {
             loop {
                 // Poll for events with a short timeout to allow checking if the channel is still alive
-                if let Ok(true) = crossterm::event::poll(Duration::from_millis(500)) {
-                    if let Ok(CrosstermEvent::Key(key)) = crossterm::event::read() {
-                        if key_tx.send(key).is_err() {
-                            break;
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(500))
+                    && let Ok(event) = crossterm::event::read()
+                {
+                    match &event {
+                        CrosstermEvent::Key(_) | CrosstermEvent::FocusGained => {
+                            if key_tx.send(event).is_err() {
+                                break;
+                            }
                         }
+                        _ => {}
                     }
                 }
                 // If receiver dropped, exit loop
@@ -220,13 +323,49 @@ impl App {
         // Tick interval (250ms for 4 FPS)
         let mut tick_interval = tokio::time::interval(Duration::from_millis(250));
 
+        // Restore queue state from previous session
+        match AppState::load() {
+            Ok(state) if !state.queue_tracks.is_empty() => {
+                self.queue = Queue::restore(
+                    state.queue_tracks,
+                    state.queue_current_index,
+                    state.play_mode,
+                );
+                // Sync UI cursor to restored current index
+                if let Some(idx) = self.queue.current_index() {
+                    self.ui.track_list_cursor = idx;
+                }
+            }
+            Ok(_) => {} // empty state, start fresh
+            Err(e) => {
+                // Non-fatal: just log and continue with an empty queue
+                eprintln!("Warning: failed to load state: {e}");
+            }
+        }
+
         let result = self.run_loop(&mut terminal, &mut key_rx, &mut tick_interval).await;
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableFocusChange)?;
+
+        // Restore tmux focus-events to whatever it was before we started
+        restore_tmux_focus_events(tmux_focus_was_on);
 
         let _ = self.player.shutdown();
+
+        // Persist queue state on clean exit
+        let (queue_tracks, queue_current_index, play_mode) = self.queue.snapshot();
+        let app_state = AppState { queue_tracks, queue_current_index, play_mode };
+        if let Err(e) = app_state.save() {
+            eprintln!("Warning: failed to save state: {e}");
+        }
+
+        // Persist playlists on clean exit
+        let store = PlaylistStore { playlists: self.playlists.clone() };
+        if let Err(e) = store.save() {
+            eprintln!("Warning: failed to save playlists: {e}");
+        }
 
         result
     }
@@ -234,7 +373,7 @@ impl App {
     async fn run_loop(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-        key_rx: &mut mpsc::UnboundedReceiver<KeyEvent>,
+        key_rx: &mut mpsc::UnboundedReceiver<CrosstermEvent>,
         tick_interval: &mut tokio::time::Interval,
     ) -> anyhow::Result<()> {
         loop {
@@ -243,10 +382,29 @@ impl App {
             }
 
             tokio::select! {
-                // Key events from crossterm
-                key = key_rx.recv() => {
-                    if let Some(key) = key {
-                        self.handle_key(key);
+                // Key / focus events from crossterm
+                event = key_rx.recv() => {
+                    match event {
+                        Some(CrosstermEvent::Key(key)) => self.handle_key(key),
+                        Some(CrosstermEvent::FocusGained) => {
+                            // Terminal regained focus (e.g. tmux window switch back).
+                            // 1. Rebuild cover protocol states so images are re-encoded.
+                            // 2. Only call terminal.clear() for protocols whose pixel data
+                            //    lives outside ratatui's cell buffer (Sixel, Kitty, iTerm2).
+                            //    For Halfblocks, tmux preserves the Unicode half-block chars
+                            //    in its own cell buffer — no clear needed, no flash.
+                            let needs_clear = self.cover_manager
+                                .as_ref()
+                                .map(|mgr| mgr.needs_terminal_clear_on_focus())
+                                .unwrap_or(false);
+                            if let Some(mgr) = &mut self.cover_manager {
+                                mgr.invalidate_all();
+                            }
+                            if needs_clear {
+                                let _ = terminal.clear();
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -268,7 +426,12 @@ impl App {
             self.position = self.player.position();
             self.duration = self.player.duration();
 
-            // Render
+            // Render — clear first if a full re-draw was requested (e.g. after
+            // tmux focus-regain or Ctrl+L) so ratatui re-emits all escape seqs.
+            if self.force_redraw {
+                self.force_redraw = false;
+                let _ = terminal.clear();
+            }
             terminal.draw(|f| self.draw(f))?;
         }
 
@@ -307,7 +470,7 @@ impl App {
                 }
             }
             Command::NextTrack => {
-                if let Some(track) = self.queue.next() {
+                if let Some(track) = self.queue.advance() {
                     let track = track.clone();
                     self.play_track(track);
                 }
@@ -347,13 +510,15 @@ impl App {
                 }
                 self.show_popup(PopupLayer::VolumeSlider);
             }
-            Command::ToggleShuffle => {
-                // P2: no-op in P1
-                self.set_status("Shuffle: P2 feature".to_string());
-            }
-            Command::CycleRepeat => {
-                // P2: no-op in P1
-                self.set_status("Repeat: P2 feature".to_string());
+            Command::CyclePlayMode => {
+                self.queue.cycle_play_mode();
+                let label = match self.queue.play_mode {
+                    crate::queue::PlayMode::Sequential => "▶",
+                    crate::queue::PlayMode::RepeatList => "🔁",
+                    crate::queue::PlayMode::RepeatOne  => "🔂",
+                    crate::queue::PlayMode::Shuffle    => "🔀",
+                };
+                self.set_status(label.to_string());
             }
             Command::FocusNext => {
                 let (pv, dv) = self.column_visibility();
@@ -395,17 +560,19 @@ impl App {
                 }
             }
             Command::MoveCursorLeft => {
-                if self.popup_stack.contains(&PopupLayer::Search) && self.search_focus_input {
-                    if self.search_query_cursor > 0 {
-                        self.search_query_cursor -= 1;
-                    }
+                if self.popup_stack.contains(&PopupLayer::Search)
+                    && self.search_focus_input
+                    && self.search_query_cursor > 0
+                {
+                    self.search_query_cursor -= 1;
                 }
             }
             Command::MoveCursorRight => {
-                if self.popup_stack.contains(&PopupLayer::Search) && self.search_focus_input {
-                    if self.search_query_cursor < self.search_query.chars().count() {
-                        self.search_query_cursor += 1;
-                    }
+                if self.popup_stack.contains(&PopupLayer::Search)
+                    && self.search_focus_input
+                    && self.search_query_cursor < self.search_query.chars().count()
+                {
+                    self.search_query_cursor += 1;
                 }
             }
             Command::MoveCursorPageUp => {
@@ -429,10 +596,13 @@ impl App {
                     self.search_cursor = 0;
                 } else {
                     match self.focus_column {
+                        FocusColumn::Playlist => {
+                            self.playlist_cursor = 0;
+                            self.ui.playlist_list_state.select(Some(0));
+                            self.ui.track_list_cursor = 0;
+                        }
                         FocusColumn::TrackList => {
-                            if !self.queue.is_empty() {
-                                self.ui.track_list_cursor = 0;
-                            }
+                            self.ui.track_list_cursor = 0;
                         }
                         _ => {}
                     }
@@ -446,9 +616,16 @@ impl App {
                     }
                 } else {
                     match self.focus_column {
+                        FocusColumn::Playlist => {
+                            let max = self.playlists.len();
+                            self.playlist_cursor = max;
+                            self.ui.playlist_list_state.select(Some(max));
+                            self.ui.track_list_cursor = 0;
+                        }
                         FocusColumn::TrackList => {
-                            if !self.queue.is_empty() {
-                                self.ui.track_list_cursor = self.queue.len() - 1;
+                            let len = self.active_track_list_len();
+                            if len > 0 {
+                                self.ui.track_list_cursor = len - 1;
                             }
                         }
                         _ => {}
@@ -458,16 +635,27 @@ impl App {
             Command::PlaySelected => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
                     if self.search_focus_input {
-                        // Enter in input field (Normal mode) re-submits search
+                        // Enter in input field re-submits search
                         self.handle_command(Command::SearchSubmit);
-                    } else if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
-                        // Play selected search result
+                    } else if !self.search_results.is_empty()
+                        && self.search_cursor < self.search_results.len()
+                    {
                         let track = self.search_results[self.search_cursor].clone();
-                        self.queue.push(track.clone());
-                        let idx = self.queue.len() - 1;
-                        self.queue.jump_to(idx);
-                        self.play_track(track);
-                        self.set_status(format!("Playing: {}", self.search_results[self.search_cursor].title));
+                        let title = track.title.clone();
+                        if let Some(existing_idx) = self.queue.tracks().iter().position(|t| t.bvid == track.bvid) {
+                            self.queue.jump_to(existing_idx);
+                            self.ui.track_list_cursor = existing_idx;
+                            let t = self.queue.current_track().cloned();
+                            if let Some(t) = t {
+                                self.play_track(t);
+                            }
+                        } else {
+                            self.queue.push(track.clone());
+                            let idx = self.queue.len() - 1;
+                            self.queue.jump_to(idx);
+                            self.play_track(track);
+                        }
+                        self.set_status(format!("Playing: {title}"));
                     }
                 } else {
                     self.play_selected();
@@ -477,19 +665,35 @@ impl App {
                 if self.popup_stack.contains(&PopupLayer::Search) {
                     if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
                         let track = self.search_results[self.search_cursor].clone();
-                        self.queue.push(track);
-                        self.set_status("Added to queue".to_string());
+                        self.add_track_to_queue_dedup(track);
+                    }
+                } else if self.focus_column == FocusColumn::TrackList && self.playlist_cursor > 0 {
+                    let pl_idx = self.playlist_cursor - 1;
+                    if pl_idx < self.playlists.len() {
+                        let track_idx = self.ui.track_list_cursor;
+                        if track_idx < self.playlists[pl_idx].tracks.len() {
+                            let track = self.playlists[pl_idx].tracks[track_idx].clone();
+                            self.add_track_to_queue_dedup(track);
+                        }
                     }
                 }
             }
             Command::RemoveFromQueue => {
-                if self.focus_column == FocusColumn::TrackList && !self.queue.is_empty() {
-                    let idx = self.ui.track_list_cursor;
-                    if idx < self.queue.len() {
-                        self.queue.remove(idx);
-                        if self.ui.track_list_cursor > 0 && self.ui.track_list_cursor >= self.queue.len() {
-                            self.ui.track_list_cursor = self.queue.len().saturating_sub(1);
+                if self.focus_column == FocusColumn::TrackList {
+                    if self.playlist_cursor == 0 {
+                        // Queue view: remove from queue
+                        let idx = self.ui.track_list_cursor;
+                        if idx < self.queue.len() {
+                            self.queue.remove(idx);
+                            if self.ui.track_list_cursor > 0
+                                && self.ui.track_list_cursor >= self.queue.len()
+                            {
+                                self.ui.track_list_cursor = self.queue.len().saturating_sub(1);
+                            }
                         }
+                    } else {
+                        // Playlist view: remove from playlist
+                        self.handle_command(Command::RemoveFromPlaylist);
                     }
                 }
             }
@@ -538,16 +742,33 @@ impl App {
             Command::SearchSubmit => {
                 let query = self.search_query.clone();
                 if !query.is_empty() {
-                    self.searching = true;
-                    let client = self.client.clone();
-                    let (result_tx, result_rx) = mpsc::unbounded_channel();
+                    // Detect BV ID: bare "BV..." or embedded in a bilibili.com URL
+                    let bvid = extract_bvid(&query);
+                    if let Some(bvid) = bvid {
+                        // Direct BV playback: fetch video info, then play immediately
+                        self.searching = true;
+                        let client = self.client.clone();
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        let bvid_clone = bvid.clone();
+                        tokio::spawn(async move {
+                            let result = get_video_info(&client, &bvid_clone).await;
+                            let _ = tx.send(result);
+                        });
+                        self.pending_bv_fetch = Some(rx);
+                        self.set_status(format!("Loading {bvid}…"));
+                    } else {
+                        // Regular keyword search
+                        self.searching = true;
+                        let client = self.client.clone();
+                        let (result_tx, result_rx) = mpsc::unbounded_channel();
 
-                    tokio::spawn(async move {
-                        let result = search_videos(&client, &query, 1).await;
-                        let _ = result_tx.send(result);
-                    });
+                        tokio::spawn(async move {
+                            let result = search_videos(&client, &query, 1).await;
+                            let _ = result_tx.send(result);
+                        });
 
-                    self.search_result_rx = Some(result_rx);
+                        self.search_result_rx = Some(result_rx);
+                    }
                 }
             }
             Command::OpenHelp => {
@@ -555,6 +776,168 @@ impl App {
             }
             Command::CloseHelp => {
                 self.hide_popup(PopupLayer::Help);
+            }
+            Command::CreatePlaylist => {
+                if self.focus_column == FocusColumn::Playlist {
+                    self.playlist_name_input.clear();
+                    self.show_popup(PopupLayer::PlaylistCreate);
+                }
+            }
+            Command::CreatePlaylistChar(c) => {
+                self.playlist_name_input.push(c);
+            }
+            Command::CreatePlaylistBackspace => {
+                self.playlist_name_input.pop();
+            }
+            Command::CreatePlaylistConfirm => {
+                let name = self.playlist_name_input.trim().to_string();
+                if name.is_empty() {
+                    self.set_status("Playlist name cannot be empty".to_string());
+                } else {
+                    self.playlists.push(Playlist::new(name));
+                    self.playlist_cursor = self.playlists.len();
+                    self.ui.playlist_list_state.select(Some(self.playlist_cursor));
+                    self.playlist_name_input.clear();
+                    self.hide_popup(PopupLayer::PlaylistCreate);
+                    self.save_playlists_async();
+                }
+            }
+            Command::CreatePlaylistCancel => {
+                self.playlist_name_input.clear();
+                self.hide_popup(PopupLayer::PlaylistCreate);
+            }
+            Command::DeletePlaylist => {
+                if self.focus_column == FocusColumn::Playlist && self.playlist_cursor > 0 {
+                    let idx = self.playlist_cursor - 1;
+                    if idx < self.playlists.len() {
+                        self.show_popup(PopupLayer::PlaylistDeleteConfirm);
+                    }
+                }
+            }
+            Command::DeletePlaylistConfirm => {
+                let idx = self.playlist_cursor.saturating_sub(1);
+                if self.playlist_cursor > 0 && idx < self.playlists.len() {
+                    let name = self.playlists[idx].name.clone();
+                    self.playlists.remove(idx);
+                    if self.playlist_cursor > self.playlists.len() {
+                        self.playlist_cursor = self.playlists.len();
+                    }
+                    self.ui.playlist_list_state.select(Some(self.playlist_cursor));
+                    self.hide_popup(PopupLayer::PlaylistDeleteConfirm);
+                    self.set_status(format!("Deleted playlist \"{}\"", name));
+                    self.save_playlists_async();
+                }
+            }
+            Command::DeletePlaylistCancel => {
+                self.hide_popup(PopupLayer::PlaylistDeleteConfirm);
+            }
+            Command::AddToPlaylistOpen => {
+                // Determine the track to add based on context
+                let track = if self.popup_stack.contains(&PopupLayer::Search) {
+                    if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                        Some(self.search_results[self.search_cursor].clone())
+                    } else {
+                        None
+                    }
+                } else if self.focus_column == FocusColumn::TrackList {
+                    // Either from queue or playlist view
+                    let tracks = self.active_track_list();
+                    let idx = self.ui.track_list_cursor;
+                    if idx < tracks.len() {
+                        Some(tracks[idx].clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(track) = track {
+                    self.add_to_playlist_track = Some(track);
+                    self.add_to_playlist_cursor = 0;
+                    self.show_popup(PopupLayer::AddToPlaylist);
+                } else {
+                    self.set_status("No track selected".to_string());
+                }
+            }
+            Command::AddToPlaylistMove(delta) => {
+                let max = self.playlists.len();
+                if max == 0 {
+                    return;
+                }
+                let cur = self.add_to_playlist_cursor as isize;
+                let new = (cur + delta).clamp(0, (max - 1) as isize) as usize;
+                self.add_to_playlist_cursor = new;
+            }
+            Command::AddToPlaylistConfirm => {
+                if let Some(track) = self.add_to_playlist_track.take() {
+                    let idx = self.add_to_playlist_cursor;
+                    if idx < self.playlists.len() {
+                        let added = self.playlists[idx].add_track(track.clone());
+                        let pl_name = self.playlists[idx].name.clone();
+                        self.hide_popup(PopupLayer::AddToPlaylist);
+                        if added {
+                            self.set_status(format!("Added \"{}\" to \"{}\"", track.title, pl_name));
+                            self.save_playlists_async();
+                        } else {
+                            self.set_status(format!("\"{}\" already in \"{}\"", track.title, pl_name));
+                        }
+                    }
+                } else {
+                    self.hide_popup(PopupLayer::AddToPlaylist);
+                }
+            }
+            Command::AddToPlaylistCancel => {
+                self.add_to_playlist_track = None;
+                self.hide_popup(PopupLayer::AddToPlaylist);
+            }
+            Command::RemoveFromPlaylist => {
+                if self.focus_column == FocusColumn::TrackList && self.playlist_cursor > 0 {
+                    let pl_idx = self.playlist_cursor - 1;
+                    if pl_idx < self.playlists.len() {
+                        let track_idx = self.ui.track_list_cursor;
+                        if track_idx < self.playlists[pl_idx].tracks.len() {
+                            let removed = self.playlists[pl_idx].tracks.remove(track_idx);
+                            if self.ui.track_list_cursor > 0
+                                && self.ui.track_list_cursor >= self.playlists[pl_idx].tracks.len()
+                            {
+                                self.ui.track_list_cursor = self.playlists[pl_idx].tracks.len().saturating_sub(1);
+                            }
+                            self.set_status(format!("Removed \"{}\" from playlist", removed.title));
+                            self.save_playlists_async();
+                        }
+                    }
+                }
+            }
+            Command::FocusPlaylistColumn => {
+                self.focus_column = FocusColumn::Playlist;
+            }
+            Command::FocusTrackListColumn => {
+                self.focus_column = FocusColumn::TrackList;
+                let len = self.active_track_list_len();
+                if self.ui.track_list_cursor >= len && len > 0 {
+                    self.ui.track_list_cursor = len - 1;
+                } else if len == 0 {
+                    self.ui.track_list_cursor = 0;
+                }
+            }
+            Command::FocusDetailColumn => {
+                self.focus_column = FocusColumn::Detail;
+            }
+            Command::Redraw => {
+                // Rebuild cover protocol states.  For protocols that store pixel data
+                // outside ratatui's cell buffer (Sixel, Kitty, iTerm2), also set
+                // force_redraw so the render step calls terminal.clear() — which forces
+                // ratatui to re-emit all escape sequences including the image data.
+                // For Halfblocks, the Unicode chars live in ratatui's buffer and survive
+                // tmux window switches, so no clear is needed (no flash for those users).
+                let needs_clear = self.cover_manager
+                    .as_ref()
+                    .map(|mgr| mgr.needs_terminal_clear_on_focus())
+                    .unwrap_or(true); // if no cover manager, Ctrl+L should still clear
+                if let Some(mgr) = &mut self.cover_manager {
+                    mgr.invalidate_all();
+                }
+                self.force_redraw = needs_clear;
             }
             Command::Noop => {}
         }
@@ -580,6 +963,32 @@ impl App {
                 }
                 Err(_) => {
                     self.pending_stream = Some((track, rx));
+                }
+            }
+        }
+
+        // Check for direct BV fetch result
+        if let Some(mut rx) = self.pending_bv_fetch.take() {
+            match rx.try_recv() {
+                Ok(Ok(track)) => {
+                    self.searching = false;
+                    // Treat the result exactly like a 1-item search result list —
+                    // the user chooses what to do next (Enter=play, a=add to queue,
+                    // A=add to playlist, Esc=close).
+                    self.search_results = vec![track];
+                    self.search_cursor = 0;
+                    self.search_focus_input = false;
+                    self.input_mode = InputMode::SearchNormal;
+                    self.status_message = None;
+                }
+                Ok(Err(e)) => {
+                    self.searching = false;
+                    self.set_status(format!("BV fetch failed: {e}"));
+                    self.input_mode = InputMode::SearchInput;
+                }
+                Err(_) => {
+                    // Still pending
+                    self.pending_bv_fetch = Some(rx);
                 }
             }
         }
@@ -614,13 +1023,12 @@ impl App {
         }
 
         // Auto-dismiss volume slider after 3 seconds
-        if self.popup_stack.contains(&PopupLayer::VolumeSlider) {
-            if let Some(ts) = self.volume_popup_time {
-                if ts.elapsed() > Duration::from_secs(3) {
-                    self.popup_stack.retain(|&l| l != PopupLayer::VolumeSlider);
-                    self.volume_popup_time = None;
-                }
-            }
+        if self.popup_stack.contains(&PopupLayer::VolumeSlider)
+            && let Some(ts) = self.volume_popup_time
+            && ts.elapsed() > Duration::from_secs(3)
+        {
+            self.popup_stack.retain(|&l| l != PopupLayer::VolumeSlider);
+            self.volume_popup_time = None;
         }
     }
 
@@ -628,7 +1036,7 @@ impl App {
         match event {
             PlayerEvent::TrackEnded { reason } => {
                 if reason == 0 {
-                    if let Some(track) = self.queue.next() {
+                    if let Some(track) = self.queue.advance() {
                         let track = track.clone();
                         self.play_track(track);
                     } else {
@@ -673,29 +1081,58 @@ impl App {
     }
 
     fn play_selected(&mut self) {
-        match self.focus_column {
-            FocusColumn::TrackList => {
-                if self.ui.track_list_cursor < self.queue.len() {
-                    let idx = self.ui.track_list_cursor;
+        if self.focus_column == FocusColumn::TrackList {
+            if self.playlist_cursor == 0 {
+                // Queue view: play highlighted queue track
+                let idx = self.ui.track_list_cursor;
+                if idx < self.queue.len() {
                     self.queue.jump_to(idx);
-                    if let Some(track) = self.queue.current_track() {
-                        let track = track.clone();
+                    if let Some(track) = self.queue.current_track().cloned() {
                         self.play_track(track);
                     }
                 }
+            } else {
+                // Playlist view: replace queue with entire playlist, play from cursor
+                let pl_idx = self.playlist_cursor - 1;
+                if pl_idx < self.playlists.len() {
+                    let start = self.ui.track_list_cursor;
+                    let tracks = self.playlists[pl_idx].tracks.clone();
+                    if !tracks.is_empty() && start < tracks.len() {
+                        self.queue.clear();
+                        for t in tracks {
+                            self.queue.push(t);
+                        }
+                        self.queue.jump_to(start);
+                        self.ui.track_list_cursor = start;
+                        // Switch middle column view to Queue
+                        self.playlist_cursor = 0;
+                        self.ui.playlist_list_state.select(Some(0));
+                        if let Some(track) = self.queue.current_track().cloned() {
+                            self.play_track(track);
+                        }
+                    }
+                }
             }
-            _ => {}
         }
     }
 
     fn move_cursor(&mut self, delta: isize) {
         match self.focus_column {
+            FocusColumn::Playlist => {
+                let max = self.playlists.len();
+                let cur = self.playlist_cursor as isize;
+                let new = (cur + delta).clamp(0, max as isize) as usize;
+                self.playlist_cursor = new;
+                self.ui.playlist_list_state.select(Some(new));
+                self.ui.track_list_cursor = 0;
+            }
             FocusColumn::TrackList => {
-                if self.queue.is_empty() {
+                let len = self.active_track_list_len();
+                if len == 0 {
                     return;
                 }
                 let cur = self.ui.track_list_cursor as isize;
-                let new = (cur + delta).clamp(0, (self.queue.len() - 1) as isize);
+                let new = (cur + delta).clamp(0, (len - 1) as isize);
                 self.ui.track_list_cursor = new as usize;
             }
             _ => {}
@@ -729,6 +1166,50 @@ impl App {
         self.status_message = Some(msg);
     }
 
+    /// Length of the currently visible track list (queue if cursor=0, else playlist tracks).
+    pub fn active_track_list_len(&self) -> usize {
+        if self.playlist_cursor == 0 {
+            self.queue.len()
+        } else {
+            let pl_idx = self.playlist_cursor - 1;
+            self.playlists.get(pl_idx).map(|p| p.tracks.len()).unwrap_or(0)
+        }
+    }
+
+    /// Slice of tracks for the currently visible middle column.
+    pub fn active_track_list(&self) -> &[Track] {
+        if self.playlist_cursor == 0 {
+            self.queue.tracks()
+        } else {
+            let pl_idx = self.playlist_cursor - 1;
+            self.playlists.get(pl_idx).map(|p| p.tracks.as_slice()).unwrap_or(&[])
+        }
+    }
+
+    fn save_playlists_async(&mut self) {
+        let store = PlaylistStore { playlists: self.playlists.clone() };
+        tokio::spawn(async move {
+            if let Err(e) = store.save() {
+                eprintln!("Failed to save playlists: {e}");
+            }
+        });
+    }
+
+    fn add_track_to_queue_dedup(&mut self, track: Track) {
+        if let Some(existing_idx) = self.queue.tracks().iter().position(|t| t.bvid == track.bvid) {
+            self.queue.jump_to(existing_idx);
+            self.ui.track_list_cursor = existing_idx;
+            let t = self.queue.current_track().cloned();
+            if let Some(t) = t {
+                self.play_track(t);
+            }
+            self.set_status(format!("Already in queue – jumped to: {}", track.title));
+        } else {
+            self.queue.push(track.clone());
+            self.set_status(format!("Added to queue: {}", track.title));
+        }
+    }
+
     fn column_visibility(&self) -> (bool, bool) {
         if self.terminal_width >= 80 {
             (true, true)
@@ -753,7 +1234,10 @@ impl App {
         crate::ui::draw_status_bar(f, self, status);
 
         crate::ui::playlist_view::draw(f, self, playlist);
-        crate::ui::now_playing::draw(f, self, detail);
+
+        let mut cover_manager = self.cover_manager.take();
+        crate::ui::now_playing::draw(f, self, &mut cover_manager, detail);
+        self.cover_manager = cover_manager;
 
         let mut ui = std::mem::take(&mut self.ui);
         crate::ui::track_list::draw(f, self, &mut ui, track_list);
@@ -767,13 +1251,107 @@ impl App {
         if self.popup_stack.contains(&PopupLayer::Help) {
             crate::ui::help_view::draw(f, self, area);
         }
+        if self.popup_stack.contains(&PopupLayer::PlaylistCreate) {
+            crate::ui::input_popup::draw(f, self, area);
+        }
+        if self.popup_stack.contains(&PopupLayer::PlaylistDeleteConfirm) {
+            crate::ui::confirm_popup::draw(f, self, area);
+        }
+        if self.popup_stack.contains(&PopupLayer::AddToPlaylist) {
+            crate::ui::add_to_playlist_popup::draw(f, self, area);
+        }
 
         self.ui = ui;
     }
 }
 
+// ── tmux focus-events helpers ─────────────────────────────────────────────────
+//
+// When running inside tmux, `focus-events` must be `on` for the terminal's
+// \033[?1004h (EnableFocusChange) sequence to be forwarded to panes.  We
+// enable it on entry and restore whatever the user had before on exit.
+
+/// Enable `tmux focus-events` for the current session.
+/// Returns `true` if it was already on (so the caller knows not to turn it off).
+/// Returns `false` if it was off (we turned it on, caller should turn it off later).
+/// Returns `false` also when not inside tmux — no-op.
+fn enable_tmux_focus_events() -> bool {
+    // If not inside tmux, do nothing.
+    if std::env::var("TMUX").is_err() {
+        return true; // "was already in desired state" → no action needed on exit
+    }
+
+    // Query current value
+    let already_on = std::process::Command::new("tmux")
+        .args(["show-option", "-gv", "focus-events"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "on")
+        .unwrap_or(false);
+
+    if !already_on {
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-g", "focus-events", "on"])
+            .status();
+    }
+
+    already_on
+}
+
+/// Restore `tmux focus-events` to the state it was in before we ran.
+/// `was_on` is the value returned by `enable_tmux_focus_events()`.
+fn restore_tmux_focus_events(was_on: bool) {
+    if std::env::var("TMUX").is_err() {
+        return;
+    }
+    if !was_on {
+        // We turned it on — turn it back off
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-g", "focus-events", "off"])
+            .status();
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
-        Self::new(Config::default()).unwrap()
+        Self::new(Config::default(), None).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_bvid;
+
+    #[test]
+    fn test_extract_bvid_bare() {
+        assert_eq!(extract_bvid("BV1xx411c7mD"), Some("BV1xx411c7mD".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bvid_url() {
+        assert_eq!(
+            extract_bvid("https://www.bilibili.com/video/BV1xx411c7mD"),
+            Some("BV1xx411c7mD".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bvid_url_with_query() {
+        assert_eq!(
+            extract_bvid("https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.999"),
+            Some("BV1xx411c7mD".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bvid_not_found() {
+        assert_eq!(extract_bvid("周杰伦 晴天"), None);
+        assert_eq!(extract_bvid(""), None);
+        assert_eq!(extract_bvid("BV123"), None); // too short
+    }
+
+    #[test]
+    fn test_extract_bvid_case_sensitive() {
+        // BV IDs are case-sensitive — lowercase "bv" should not match
+        assert_eq!(extract_bvid("bv1xx411c7mD"), None);
     }
 }

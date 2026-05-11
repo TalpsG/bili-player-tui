@@ -52,13 +52,13 @@ pub fn sign_wbi_params(
             .collect::<String>();
     }
 
-    // Build query string with encodeURIComponent-style encoding
+    // Build query string with encode_uri_component-style encoding
     // (uppercase hex digits, spaces as %20)
     let query: String = params
         .iter()
         .map(|(k, v)| {
-            let encoded_k = encodeURIComponent(k);
-            let encoded_v = encodeURIComponent(v);
+            let encoded_k = encode_uri_component(k);
+            let encoded_v = encode_uri_component(v);
             format!("{encoded_k}={encoded_v}")
         })
         .collect::<Vec<_>>()
@@ -74,10 +74,10 @@ pub fn sign_wbi_params(
     params.push(("w_rid".to_string(), hash));
 }
 
-/// encodeURIComponent-style URL encoding for WBI signing.
+/// encode_uri_component-style URL encoding for WBI signing.
 /// Follows ECMA-262: uppercase hex digits, spaces as %20.
 /// Unescaped chars: A-Z a-z 0-9 - _ . ~
-fn encodeURIComponent(s: &str) -> String {
+fn encode_uri_component(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -214,15 +214,15 @@ mod tests {
     #[test]
     fn test_encode_uri_component() {
         // ASCII alphanumeric stays as-is
-        assert_eq!(encodeURIComponent("hello123"), "hello123");
+        assert_eq!(encode_uri_component("hello123"), "hello123");
         // Space becomes %20
-        assert_eq!(encodeURIComponent("one one"), "one%20one");
+        assert_eq!(encode_uri_component("one one"), "one%20one");
         // Chinese characters are UTF-8 encoded with uppercase hex
-        assert_eq!(encodeURIComponent("五"), "%E4%BA%94");
+        assert_eq!(encode_uri_component("五"), "%E4%BA%94");
         // Special chars are encoded
-        assert_eq!(encodeURIComponent("a+b"), "a%2Bb");
+        assert_eq!(encode_uri_component("a+b"), "a%2Bb");
         // Unescaped chars: - _ . ~
-        assert_eq!(encodeURIComponent("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(encode_uri_component("a-b_c.d~e"), "a-b_c.d~e");
     }
 
     #[test]

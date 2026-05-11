@@ -48,7 +48,7 @@ fn dummy_track(title: &str) -> Track {
 #[test]
 fn test_header_rendering() {
     let mut terminal = setup_test_terminal(80, 24);
-    let mut app = App::new(Config::default()).unwrap();
+    let mut app = App::new(Config::default(), None).unwrap();
     app.logged_in = true;
     
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -76,7 +76,7 @@ fn test_responsive_layout() {
 #[test]
 fn test_search_popup_modes() {
     let mut terminal = setup_test_terminal(80, 24);
-    let mut app = App::new(Config::default()).unwrap();
+    let mut app = App::new(Config::default(), None).unwrap();
     
     app.input_mode = InputMode::SearchInput;
     app.show_popup(PopupLayer::Search);
@@ -91,7 +91,7 @@ fn test_search_popup_modes() {
 #[test]
 fn test_volume_popup_visibility() {
     let mut terminal = setup_test_terminal(80, 24);
-    let mut app = App::new(Config::default()).unwrap();
+    let mut app = App::new(Config::default(), None).unwrap();
     
     app.show_popup(PopupLayer::VolumeSlider);
     app.volume = 50;
@@ -103,7 +103,7 @@ fn test_volume_popup_visibility() {
 #[test]
 fn test_help_popup_rendering() {
     let mut terminal = setup_test_terminal(80, 24);
-    let mut app = App::new(Config::default()).unwrap();
+    let mut app = App::new(Config::default(), None).unwrap();
     
     app.show_popup(PopupLayer::Help);
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -115,7 +115,7 @@ fn test_help_popup_rendering() {
 #[test]
 fn test_clear_widget_prevents_bleed() {
     let mut terminal = setup_test_terminal(80, 24);
-    let mut app = App::new(Config::default()).unwrap();
+    let mut app = App::new(Config::default(), None).unwrap();
     
     // Background text
     app.queue.push(dummy_track("HIDDEN_TEXT"));
@@ -135,4 +135,58 @@ fn test_clear_widget_prevents_bleed() {
             assert!(!line.contains("HIDDEN_TEXT"));
         }
     }
+}
+
+#[test]
+fn test_playlist_list_shows_queue_and_playlists() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = App::new(Config::default(), None).unwrap();
+    app.playlists.push(crate::playlist::Playlist::new("My Faves"));
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(buffer_contains(buffer, "Playlists"));
+    assert!(buffer_contains(buffer, "Queue"));
+    assert!(buffer_contains(buffer, "MyFaves"));  // spaces stripped by buffer_contains helper
+}
+
+#[test]
+fn test_create_playlist_popup_shown() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = App::new(Config::default(), None).unwrap();
+    app.playlist_name_input = "Rock".to_string();
+    app.popup_stack.push(crate::app::PopupLayer::PlaylistCreate);
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(buffer_contains(buffer, "NewPlaylist"));
+}
+
+#[test]
+fn test_middle_column_shows_playlist_tracks() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = App::new(Config::default(), None).unwrap();
+    let mut pl = crate::playlist::Playlist::new("Test");
+    pl.add_track(dummy_track("Bilibili Hit"));
+    app.playlists.push(pl);
+    app.playlist_cursor = 1; // focus on that playlist
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(buffer_contains(buffer, "BilibiliHit"));
+}
+
+#[test]
+fn test_active_track_list_len_queue() {
+    let mut app = App::new(Config::default(), None).unwrap();
+    app.queue.push(dummy_track("A"));
+    app.queue.push(dummy_track("B"));
+    assert_eq!(app.active_track_list_len(), 2);
+}
+
+#[test]
+fn test_active_track_list_len_playlist() {
+    let mut app = App::new(Config::default(), None).unwrap();
+    let mut pl = crate::playlist::Playlist::new("P");
+    pl.add_track(dummy_track("X"));
+    app.playlists.push(pl);
+    app.playlist_cursor = 1;
+    assert_eq!(app.active_track_list_len(), 1);
 }

@@ -24,8 +24,9 @@ async fn main() -> Result<()> {
     match args.command {
         Some(Commands::Play { input }) => play_command(&config, &input).await?,
         None => {
-            // TUI mode
-            let mut app = bili_player_cli::app::App::new(config)?;
+            // TUI mode — detect image protocol BEFORE enabling raw mode
+            let picker = bili_player_cli::cover::protocol::detect_protocol();
+            let mut app = bili_player_cli::app::App::new(config, picker)?;
             app.run().await?;
             std::process::exit(0);
         }

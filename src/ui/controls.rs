@@ -16,6 +16,21 @@ pub fn key_to_command(
         return help_mode_keys(key);
     }
 
+    // AddToPlaylist chooser popup
+    if popup_stack.contains(&PopupLayer::AddToPlaylist) {
+        return add_to_playlist_mode_keys(key);
+    }
+
+    // PlaylistDeleteConfirm popup
+    if popup_stack.contains(&PopupLayer::PlaylistDeleteConfirm) {
+        return delete_confirm_mode_keys(key);
+    }
+
+    // PlaylistCreate input popup
+    if popup_stack.contains(&PopupLayer::PlaylistCreate) {
+        return create_playlist_mode_keys(key);
+    }
+
     // If Search popup is active, handle search input
     if popup_stack.contains(&PopupLayer::Search) {
         return match mode {
@@ -38,6 +53,34 @@ fn help_mode_keys(key: KeyEvent) -> Command {
     }
 }
 
+fn create_playlist_mode_keys(key: KeyEvent) -> Command {
+    match key.code {
+        KeyCode::Esc => Command::CreatePlaylistCancel,
+        KeyCode::Enter => Command::CreatePlaylistConfirm,
+        KeyCode::Backspace => Command::CreatePlaylistBackspace,
+        KeyCode::Char(c) => Command::CreatePlaylistChar(c),
+        _ => Command::Noop,
+    }
+}
+
+fn delete_confirm_mode_keys(key: KeyEvent) -> Command {
+    match key.code {
+        KeyCode::Enter | KeyCode::Char('y') => Command::DeletePlaylistConfirm,
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => Command::DeletePlaylistCancel,
+        _ => Command::Noop,
+    }
+}
+
+fn add_to_playlist_mode_keys(key: KeyEvent) -> Command {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => Command::AddToPlaylistCancel,
+        KeyCode::Enter => Command::AddToPlaylistConfirm,
+        KeyCode::Char('j') | KeyCode::Down => Command::AddToPlaylistMove(1),
+        KeyCode::Char('k') | KeyCode::Up => Command::AddToPlaylistMove(-1),
+        _ => Command::Noop,
+    }
+}
+
 fn search_input_mode_keys(key: KeyEvent) -> Command {
     match key.code {
         KeyCode::Esc => Command::CloseSearch,
@@ -49,19 +92,16 @@ fn search_input_mode_keys(key: KeyEvent) -> Command {
 }
 
 fn search_normal_mode_keys(key: KeyEvent, _search_results_len: usize) -> Command {
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Command::CloseSearch,
-        KeyCode::Enter => {
-            // Enter in search normal always means "play" if focused on results,
-            // or "search" if focused on input (this is handled in app.rs based on focus state)
-            Command::PlaySelected
-        }
-        KeyCode::Char('i') => Command::EnterSearchInput,
-        KeyCode::Char('a') => Command::EnterSearchAppend,
-        KeyCode::Char('h') | KeyCode::Left => Command::MoveCursorLeft,
-        KeyCode::Char('l') | KeyCode::Right => Command::MoveCursorRight,
-        KeyCode::Char('j') | KeyCode::Down => Command::MoveCursorDown,
-        KeyCode::Char('k') | KeyCode::Up => Command::MoveCursorUp,
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => Command::CloseSearch,
+        (KeyModifiers::NONE, KeyCode::Enter) => Command::PlaySelected,
+        (KeyModifiers::NONE, KeyCode::Char('i')) => Command::EnterSearchInput,
+        (KeyModifiers::NONE, KeyCode::Char('a')) => Command::EnterSearchAppend,
+        (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
+        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => Command::MoveCursorLeft,
+        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => Command::MoveCursorRight,
+        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => Command::MoveCursorDown,
+        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => Command::MoveCursorUp,
         _ => Command::Noop,
     }
 }
@@ -71,6 +111,7 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         // Global
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => Command::Quit,
         (KeyModifiers::NONE, KeyCode::Char('q')) => Command::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('l')) => Command::Redraw,
         (KeyModifiers::NONE, KeyCode::Char('/')) => Command::OpenSearch,
         (KeyModifiers::NONE, KeyCode::Char('?')) => Command::OpenHelp,
         (KeyModifiers::NONE, KeyCode::Tab) => Command::FocusNext,
@@ -80,11 +121,30 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         (KeyModifiers::NONE, KeyCode::Char(' ')) => Command::TogglePause,
         (KeyModifiers::NONE, KeyCode::Char('n')) => Command::NextTrack,
         (KeyModifiers::NONE, KeyCode::Char('p')) => Command::PrevTrack,
-        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => Command::SeekBackward,
-        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => Command::SeekForward,
+
+        // h/l: column navigation (ranger/yazi style)
+        (KeyModifiers::NONE, KeyCode::Char('h')) => {
+            match focus {
+                FocusColumn::Playlist  => Command::Noop,              // already leftmost
+                FocusColumn::TrackList => Command::FocusPlaylistColumn,
+                FocusColumn::Detail    => Command::FocusTrackListColumn,
+            }
+        }
+        (KeyModifiers::NONE, KeyCode::Char('l')) => {
+            match focus {
+                FocusColumn::Playlist  => Command::FocusTrackListColumn,
+                FocusColumn::TrackList => Command::FocusDetailColumn,
+                FocusColumn::Detail    => Command::Noop,              // already rightmost
+            }
+        }
+
+        // ←/→ arrow keys: always seek (regardless of focus)
+        (KeyModifiers::NONE, KeyCode::Left)  => Command::SeekBackward,
+        (KeyModifiers::NONE, KeyCode::Right) => Command::SeekForward,
+
         (KeyModifiers::NONE, KeyCode::Char('m')) => Command::ToggleMute,
-        (KeyModifiers::NONE, KeyCode::Char('s')) => Command::ToggleShuffle,
-        (KeyModifiers::NONE, KeyCode::Char('r')) => Command::CycleRepeat,
+        (KeyModifiers::NONE, KeyCode::Char('s')) => Command::Noop,
+        (KeyModifiers::NONE, KeyCode::Char('r')) => Command::CyclePlayMode,
 
         // Arrow keys: cursor or volume depending on focus
         (KeyModifiers::NONE, KeyCode::Up) => {
@@ -121,9 +181,27 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         (KeyModifiers::SHIFT, KeyCode::Char('G')) | (KeyModifiers::NONE, KeyCode::End) => Command::MoveCursorBottom,
 
         // Actions
-        (KeyModifiers::NONE, KeyCode::Enter) => Command::PlaySelected,
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            match focus {
+                FocusColumn::Playlist => Command::FocusTrackListColumn,
+                _ => Command::PlaySelected,
+            }
+        }
         (KeyModifiers::NONE, KeyCode::Char('a')) => Command::AddToQueue,
-        (KeyModifiers::NONE, KeyCode::Char('d')) => Command::RemoveFromQueue,
+        (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
+        (KeyModifiers::NONE, KeyCode::Char('c')) => {
+            match focus {
+                FocusColumn::Playlist => Command::CreatePlaylist,
+                _ => Command::Noop,
+            }
+        }
+        (KeyModifiers::NONE, KeyCode::Char('d')) => {
+            match focus {
+                FocusColumn::Playlist => Command::DeletePlaylist,
+                FocusColumn::TrackList => Command::RemoveFromQueue,  // handled contextually in app (queue vs playlist)
+                FocusColumn::Detail => Command::Noop,
+            }
+        }
 
         _ => Command::Noop,
     }

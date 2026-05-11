@@ -6,11 +6,11 @@ license = "GPL-3.0"
 
 [dependencies]
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs"] }
 async-trait = "0.1"
 
 # TUI (P1)
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 # Image (cover display)
@@ -40,6 +40,7 @@ tracing-subscriber = "0.3"
 md-5 = "0.10"
 
 # Utils
+bytes = "1"
 dirs = "6"
 url = "2"
 unicode-width = "0.2"

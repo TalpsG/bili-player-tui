@@ -9,4 +9,5 @@ pub mod event;
 pub mod player;
 pub mod playlist;
 pub mod queue;
+pub mod state;
 pub mod ui;

@@ -1,5 +1,8 @@
+pub mod add_to_playlist_popup;
+pub mod confirm_popup;
 pub mod controls;
 pub mod help_view;
+pub mod input_popup;
 pub mod layout;
 pub mod now_playing;
 pub mod playlist_view;
@@ -25,6 +28,7 @@ pub struct Ui {
     pub track_list_cursor: usize,
     pub track_list_scroll: usize,
     pub search_cursor: usize,
+    pub playlist_list_state: ratatui::widgets::ListState,
 }
 
 impl Ui {
@@ -34,6 +38,7 @@ impl Ui {
             track_list_cursor: 0,
             track_list_scroll: 0,
             search_cursor: 0,
+            playlist_list_state: ratatui::widgets::ListState::default(),
         }
     }
 }
@@ -90,9 +95,21 @@ pub fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let vol_icon = if app.muted { "🔇" } else { "🔊" };
     let status_text = match &app.status_message {
         Some(msg) => msg.clone(),
-        None => format!("{vol_icon}{}", app.volume),
+        None => {
+            let mode_icon = app.queue.play_mode.icon();
+            if mode_icon.is_empty() {
+                format!("{vol_icon}{}", app.volume)
+            } else {
+                format!("{mode_icon} {vol_icon}{}", app.volume)
+            }
+        }
     };
-    let info = Paragraph::new(format!(" {status_text:>width$}", width = chunks[1].width as usize - 1))
+    // Right-align status_text, accounting for wide characters (emoji = 2 cols each).
+    let available = chunks[1].width as usize;
+    let text_display_width = unicode_width::UnicodeWidthStr::width(status_text.as_str());
+    let padding = available.saturating_sub(text_display_width);
+    let padded = format!("{}{}", " ".repeat(padding), status_text);
+    let info = Paragraph::new(padded)
         .style(Style::default().fg(app.ui.theme.status_fg).bg(app.ui.theme.status_bg));
     f.render_widget(info, chunks[1]);
 }

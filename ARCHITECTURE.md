@@ -38,8 +38,7 @@ src/
 │   ├── wbi.rs         #   WBI 参数签名
 │   ├── search.rs      #   搜索
 │   ├── video.rs       #   视频信息
-│   ├── stream.rs      #   音频流 URL 解析
-│   └── favorite.rs    #   收藏夹
+│   └── stream.rs      #   音频流 URL 解析
 │
 ├── player/            # 播放后端
 │   ├── mod.rs         #   AudioBackend trait + GeneralPlayer
@@ -51,8 +50,8 @@ src/
 │   └── track.rs       #   Track/TrackSource 类型
 │
 ├── playlist/          # 歌单管理
-│   ├── mod.rs         #   PlaylistManager
-│   └── storage.rs     #   JSON 持久化
+│   ├── mod.rs         #   Playlist struct (CRUD, bvid dedup)
+│   └── storage.rs     #   JSON 持久化 (PlaylistStore)
 │
 ├── ui/                # TUI 渲染
 │   ├── mod.rs         #   Ui struct + draw()
@@ -64,10 +63,14 @@ src/
 │   ├── search_view.rs #   搜索 overlay (popup)
 │   ├── help_view.rs   #   帮助 overlay (popup)
 │   ├── volume_slider.rs # 音量滑钮 overlay (popup)
+│   ├── input_popup.rs #   新建歌单输入 popup
+│   ├── confirm_popup.rs # 删除歌单确认 popup
+│   ├── add_to_playlist_popup.rs # 添加到歌单选择器 popup
 │   └── theme.rs       #   暗色主题
 │
 └── cover/             # 封面图
-    ├── mod.rs         #   CoverManager + LRU 缓存
+    ├── mod.rs         #   CoverManager + LRU 缓存 + prewarm
+    ├── disk_cache.rs  #   L2 磁盘缓存 (平坦目录, URL 末段文件名)
     └── protocol.rs    #   ratatui-image 协议检测
 ```
 
@@ -131,11 +134,25 @@ Yazi/ranger 风格三栏布局，Painter's algorithm popup overlay。
 | 0 | 主布局 | 默认 | 全屏 |
 | 1 | 音量滑钮 | `↑`/`↓` 调音量 | 状态栏上方居中，自动消失 |
 | 2 | 搜索 | `/` | 居中，含输入框+结果列表 |
-| 3 | 帮助 | `?` | 全屏 |
+| 3 | 新建歌单输入 | `c` (歌单列焦点) | 居中 50×5，文字输入框 |
+| 4 | 删除歌单确认 | `d` (歌单列焦点) | 居中 52×5，红色边框，歌单名 + 二次确认 |
+| 5 | 添加到歌单选择器 | `A` (Shift+A) | 居中，动态高度，歌单列表 |
+| 6 | 帮助 | `?` | 全屏 |
 
 **Popup anchor**: 每个 popup 通过 anchor 点 + offset 确定位置 (top-center, center, hovered 等)。
 
-**输入模式**: Normal (默认) → Search Input (按 `/`) → Normal (按 `Esc`/`Enter`)
+**输入模式**:
+
+```
+Normal
+  ├─ / ──────────────────────→ SearchInput (搜索框，字符输入)
+  │                                  ├─ Enter/Esc ──→ SearchNormal (搜索结果导航，j/k/Enter/Esc)
+  │                                  └─ (直接Esc) ──→ Normal
+  │                              SearchNormal ─ Esc ──→ Normal
+  └─ (Popup 输入由 popup_stack 拦截，不切换 InputMode)
+```
+
+注: 歌单名称输入通过 `PopupLayer::PlaylistCreate` popup 完成，不需要独立的 `InputMode` 变体。
 
 ### 状态所有权
 
@@ -189,7 +206,7 @@ Yazi/ranger 风格三栏布局，Painter's algorithm popup overlay。
   - `search.rs`: 关键词搜索
   - `video.rs`: 视频信息 (bvid → cid)
   - `stream.rs`: 音频流 URL (DASH 解析 + 质量选择)
-  - `favorite.rs`: 骨架 (P2 实现)
+  - （`favorite.rs` 已移除，收藏夹导入需求取消）
 - `queue/track.rs`: Track, TrackSource, AudioQuality 数据类型
 - `player/mod.rs`: AudioBackend trait
 - `player/mpv.rs`: mpv 后端最简实现 (loadfile + play/pause/stop)
@@ -236,25 +253,26 @@ Yazi/ranger 风格三栏布局，Painter's algorithm popup overlay。
 
 **目标**: 能管理曲库，视觉体验提升。
 
-**交付物**: 歌单持久化 + 封面图显示 + Shuffle/Repeat
+**已完成**:
+- `playlist/mod.rs`: Playlist struct (创建/添加/删除, bvid 去重)
+- `playlist/storage.rs`: JSON 持久化 (PlaylistStore, 启动加载/退出保存)
+- 歌单 CRUD 完整 UI: 左栏歌单列表、创建/删除/添加到歌单三个 popup
+- 列焦点导航: `h`/`l` 在列间切换，`←`/`→` 始终 seek
+- `Shift+A`: 从搜索结果或曲目列表添加到指定歌单
+- Enter (歌单视图): 用歌单替换队列并从光标处播放
+- 队列去重: 已在队列的曲目 `a` 会跳转并播放
+- `queue/mod.rs`: Shuffle (排列索引) + Repeat (关/列表/单曲) ✅
+- 队列持久化 (state.json) ✅
+- `cover/mod.rs`: CoverManager (异步获取 + LRU 缓存 + prewarm) ✅
+- `cover/disk_cache.rs`: L2 磁盘缓存 (`{config_dir}/covers/`) ✅
+- `ui/now_playing.rs`: 封面图显示 (StatefulImage widget, 占 50% 高度) ✅
+- BV 号/URL 直接播放 (搜索框识别) ✅
+- 右栏详情面板重设计: 封面占上半部分，文字垂直居中于下半部分 ✅
 
-- `playlist/` 完整实现:
-  - `mod.rs`: PlaylistManager (创建/添加/播放/删除歌单)
-  - `storage.rs`: JSON 持久化
-- `queue/mod.rs`: Shuffle (排列索引) + Repeat (关/列表/单曲)
-- `queue` 持久化 (state.json)
-- 队列增强: 移除/清空/插入下一首
-- `cover/` 实现:
-  - `mod.rs`: CoverManager (异步获取 + LRU 缓存)
-  - `protocol.rs`: ratatui-image Picker 初始化
-- `ui/now_playing.rs`: 封面图显示 (StatefulImage widget)
-- `ui/playlist_view.rs`: 左栏歌单列表 (多个歌单 + 队列)
-- `bilibili/favorite.rs`: 收藏夹导入 (输入 ID)
-- BV 号/URL 直接播放 (搜索框识别)
-- **单元测试**: 歌单 CRUD、持久化、Shuffle/Repeat
-- **集成测试**: 歌单持久化恢复、收藏夹导入
+**待实现**:
+- **单元测试**: Shuffle/Repeat
 
-**验证**: 创建歌单 → 添加曲目 → 重启保留 → 封面显示 → Shuffle/Repeat → 导入收藏夹
+**验证**: 创建歌单 → 添加曲目 → 重启保留 ✓ | 封面显示 ✓ | Shuffle/Repeat ✓ | BV 直播 ✓
 
 ---
 

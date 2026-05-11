@@ -95,31 +95,28 @@ pub async fn get_audio_stream(
     // Try DASH format first
     if let Some(dash) = data.dash {
         // 1. Try FLAC
-        if let Some(flac) = dash.flac {
-            if let Some(audio) = flac.audio {
-                if let Some(url) = pick_url(&audio.base_url, &audio.backup_url) {
-                    return Ok(TrackSource {
-                        stream_url: url,
-                        audio_quality: AudioQuality::Flac,
-                        referer: REFERER.to_string(),
-                    });
-                }
-            }
+        if let Some(flac) = dash.flac
+            && let Some(audio) = flac.audio
+            && let Some(url) = pick_url(&audio.base_url, &audio.backup_url)
+        {
+            return Ok(TrackSource {
+                stream_url: url,
+                audio_quality: AudioQuality::Flac,
+                referer: REFERER.to_string(),
+            });
         }
 
         // 2. Try Dolby Atmos
-        if let Some(dolby) = dash.dolby {
-            if let Some(audio_list) = dolby.audio {
-                if let Some(audio) = audio_list.into_iter().next() {
-                    if let Some(url) = pick_url(&audio.base_url, &audio.backup_url) {
-                        return Ok(TrackSource {
-                            stream_url: url,
-                            audio_quality: AudioQuality::DolbyAtmos,
-                            referer: REFERER.to_string(),
-                        });
-                    }
-                }
-            }
+        if let Some(dolby) = dash.dolby
+            && let Some(audio_list) = dolby.audio
+            && let Some(audio) = audio_list.into_iter().next()
+            && let Some(url) = pick_url(&audio.base_url, &audio.backup_url)
+        {
+            return Ok(TrackSource {
+                stream_url: url,
+                audio_quality: AudioQuality::DolbyAtmos,
+                referer: REFERER.to_string(),
+            });
         }
 
         // 3. Try DASH audio (select best bitrate)
@@ -143,14 +140,14 @@ pub async fn get_audio_stream(
     }
 
     // 4. Fallback to legacy MP4 (durl)
-    if let Some(durl) = data.durl {
-        if let Some(first) = durl.into_iter().next() {
-            return Ok(TrackSource {
-                stream_url: first.url,
-                audio_quality: AudioQuality::LegacyMp4,
-                referer: REFERER.to_string(),
-            });
-        }
+    if let Some(durl) = data.durl
+        && let Some(first) = durl.into_iter().next()
+    {
+        return Ok(TrackSource {
+            stream_url: first.url,
+            audio_quality: AudioQuality::LegacyMp4,
+            referer: REFERER.to_string(),
+        });
     }
 
     Err(BilibiliError::NoAudioStream)

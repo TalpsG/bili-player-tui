@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub bilibili: BilibiliConfig,
@@ -16,19 +16,11 @@ pub struct Config {
     pub ui: UiConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BilibiliConfig {
     /// SESSDATA cookie for authenticated access
     #[serde(default)]
     pub sessdata: String,
-}
-
-impl Default for BilibiliConfig {
-    fn default() -> Self {
-        Self {
-            sessdata: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,16 +59,6 @@ impl Default for UiConfig {
 
 fn default_theme() -> String {
     "dark".to_string()
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            bilibili: BilibiliConfig::default(),
-            player: PlayerConfig::default(),
-            ui: UiConfig::default(),
-        }
-    }
 }
 
 impl Config {

@@ -25,6 +25,12 @@ impl Clone for WbiKeys {
     }
 }
 
+impl Default for WbiKeys {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WbiKeys {
     pub fn new() -> Self {
         Self {

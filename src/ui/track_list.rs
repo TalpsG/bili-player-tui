@@ -6,20 +6,21 @@ use ratatui::Frame;
 use crate::app::{App, FocusColumn};
 use crate::ui::Ui;
 
-/// Draw the middle column: queue track list.
+/// Draw the middle column: either the playback queue or a playlist's tracks.
 pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, area: Rect) {
     if area.width == 0 {
         return;
     }
 
-    let tracks = app.queue.tracks();
-    let current_idx = app.queue.current_index();
+    let is_queue_view = app.playlist_cursor == 0;
+    let tracks = app.active_track_list();
+    let current_idx = if is_queue_view { app.queue.current_index() } else { None };
 
     let items: Vec<ListItem> = tracks
         .iter()
         .enumerate()
         .map(|(i, track)| {
-            let is_current = current_idx == Some(i);
+            let is_current = is_queue_view && current_idx == Some(i);
             let prefix = if is_current { " ▸ " } else { "   " };
             let style = if is_current {
                 ui.theme.selected_item.add_modifier(Modifier::BOLD)
@@ -37,11 +38,21 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, area: Rect) {
         app.ui.theme.unfocused_border
     };
 
+    let title = if is_queue_view {
+        "Queue".to_string()
+    } else {
+        let pl_idx = app.playlist_cursor - 1;
+        app.playlists
+            .get(pl_idx)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Tracks".to_string())
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Tracks")
+                .title(title)
                 .border_style(border_style),
         )
         .highlight_style(ui.theme.focused_item);
