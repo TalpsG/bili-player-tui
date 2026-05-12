@@ -5,8 +5,7 @@ A terminal-based Bilibili audio player — search, browse, and play, all from yo
 
 ---
 
-<!-- TODO: add screenshot -->
-> 📸 terminal screenshot coming soon
+![](./assets/screenshot.png)
 
 ---
 
