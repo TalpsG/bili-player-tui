@@ -88,30 +88,33 @@ fn draw_empty(f: &mut Frame, area: Rect) {
 // ── Track detail ─────────────────────────────────────────────────────────────
 
 fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Option<CoverManager>, cover_suppressed: bool) {
-    let cover_h = cover_height(area.height);
+    // Text lines: title + author + meta + bvid = 4 (no blank line).
+    const TEXT_LINES: u16 = 4;
 
-    // Text block height: title + author + blank + meta + bvid = 5 lines.
-    const TEXT_LINES: u16 = 5;
-    const GAP: u16 = 1; // gap between cover and text
+    // Cover height: fill as much space as possible given two constraints:
+    //   • must leave TEXT_LINES rows below for metadata
+    //   • terminal chars are ~2:1 (w:h), so a square cover needs width = height×2;
+    //     if width is narrow, cap cover_h at width/2 to avoid a stretched rectangle.
+    let height_avail = area.height.saturating_sub(TEXT_LINES);
+    let width_avail = area.width / 2;
+    let cover_h = height_avail.min(width_avail).max(4);
 
-    // Total height of the cover+gap+text block; clamp to available area.
-    let block_h = cover_h.saturating_add(GAP).saturating_add(TEXT_LINES);
+    // Total block = cover + text (no gap — cover sits directly above text).
+    let block_h = cover_h.saturating_add(TEXT_LINES);
 
-    // Vertically centre the whole block so the cover sits just above the text.
+    // Vertically centre the whole block.
     let v_offset = area.height.saturating_sub(block_h) / 2;
     let block_top = area.y + v_offset;
 
-    // Constrain cover width: terminal chars are ~2:1 (w:h), so a square image
-    // looks correct at width = height * 2.  Center horizontally.
-    let ideal_w = cover_h.saturating_mul(2);
-    let cover_w = ideal_w.min(area.width);
+    // Cover width = height×2 for square appearance; centre horizontally.
+    let cover_w = cover_h.saturating_mul(2).min(area.width);
     let x_offset = (area.width.saturating_sub(cover_w)) / 2;
 
     let cover_area = Rect {
         x: area.x + x_offset,
         y: block_top,
         width: cover_w,
-        height: cover_h.min(area.height),
+        height: cover_h,
     };
 
     // Try to render the actual cover image; fall back to ASCII placeholder.
@@ -129,8 +132,8 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
         draw_cover_placeholder(f, cover_area);
     }
 
-    // Text sub-area: immediately below the cover (+ 1-row gap).
-    let text_y = block_top + cover_h + GAP;
+    // Text sub-area: immediately below the cover, no gap.
+    let text_y = block_top + cover_h;
     if text_y >= area.y + area.height {
         return;
     }
@@ -211,8 +214,6 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
         Style::default().fg(Color::Gray),
     )));
 
-    lines.push(Line::from(""));
-
     // Duration (always present) — append quality only once source is resolved
     let dur = super::format_duration(Some(track.duration));
     let meta = match &track.source {
@@ -243,11 +244,6 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// ~50% of available height, minimum 4 rows.
-fn cover_height(available: u16) -> u16 {
-    (available / 2).max(4)
-}
 
 fn format_quality(q: &AudioQuality) -> &'static str {
     match q {
