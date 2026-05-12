@@ -20,9 +20,18 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
         app.ui.theme.unfocused_border
     };
 
+    // Right panel shows the track under the cursor; falls back to now-playing
+    // when the cursor points outside the list or no track is selected.
+    let cursor_track: Option<&Track> = {
+        let tracks = app.active_track_list();
+        let idx = app.ui.track_list_cursor;
+        tracks.get(idx)
+    };
+    let displayed_track = cursor_track.or_else(|| app.queue.current_track());
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Now Playing ")
+        .title(" Details ")
         .border_style(border_style);
 
     let inner = block.inner(area);
@@ -32,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
         return;
     }
 
-    match app.queue.current_track() {
+    match displayed_track {
         None => draw_empty(f, inner),
         Some(track) => draw_track(f, inner, track, cover_manager),
     }
