@@ -12,12 +12,10 @@ A terminal-based Bilibili audio player — search, browse, and play, all from yo
 
 ## 灵感来源
 
-两个同样针对 Bilibili 的第三方音频播放器项目让我产生了做终端版本的想法：
 
 - **[Azusa](https://github.com/kenmingwang/azusa-player)** — 浏览器扩展，将 B 站视频转换为纯音频播放，支持歌单管理和歌词搜索。
 - **[NoxPlayer](https://github.com/lovegaoshi/NoxPlayer)** — 同样是面向 B 站的浏览器扩展播放器，支持 YouTube，有歌单云备份、音量归一化等功能，并有配套移动端。
 
-两者都在浏览器环境里做得很完整，但没有终端版本。bili-player-cli 是对"在终端里做同一件事"的尝试——列表导航、封面显示、歌单管理，只是运行在 shell 里。
 
 ---
 
@@ -28,8 +26,7 @@ A terminal-based Bilibili audio player — search, browse, and play, all from yo
 - **完整播放控制**：播放/暂停、上/下一曲、快进快退、音量调节、静音
 - **Shuffle & Repeat**：顺序 / 列表循环 / 单曲循环 / 随机四种模式
 - **歌单管理**：创建、删除歌单，向歌单添加/移除曲目，重启后持久保留
-- **封面图显示**：双级缓存（内存 LRU + 磁盘），支持 Kitty / Sixel / iTerm2 / Halfblocks 协议
-- **Bilibili WBI 签名**自动处理 API 鉴权；配置 SESSDATA Cookie 可解锁 Hi-Res / Dolby 高音质
+- **封面图显示**：支持 Kitty / Sixel / iTerm2 / Halfblocks 协议
 
 ---
 
@@ -46,7 +43,7 @@ A terminal-based Bilibili audio player — search, browse, and play, all from yo
 ### 构建
 
 ```bash
-git clone https://github.com/your-username/bilibili-player-cli
+git clone https://github.com/TalpsG/bili-player-tui
 cd bilibili-player-cli
 cargo build --release
 # 产物位于: target/release/bili-player-cli
@@ -61,24 +58,6 @@ cargo build --release
 # 直接播放指定视频
 ./target/release/bili-player-cli play BV1xx411c7mD
 ```
-
----
-
-## 配置
-
-配置文件路径：
-- **macOS**: `~/Library/Application Support/bili-player-cli/config.toml`
-- **Linux**: `~/.config/bili-player-cli/config.toml`
-
-要解锁 Hi-Res / Dolby 高音质，在配置文件中填入 Bilibili 的 `SESSDATA` Cookie：
-
-```toml
-sessdata = "your_sessdata_here"
-```
-
-> 获取方式：浏览器打开 bilibili.com → DevTools → Application → Cookies → 找到 `SESSDATA` 的值。
-
-不配置 SESSDATA 也能正常使用，仅限普通音质。
 
 ---
 
