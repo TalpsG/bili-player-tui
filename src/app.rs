@@ -165,6 +165,12 @@ pub struct App {
     /// Set to `true` to force `terminal.clear()` before the next draw.
     /// Used by Ctrl+L (manual redraw) and automatic tmux focus-regain handling.
     pub force_redraw: bool,
+
+    /// When `Some`, cover rendering is suppressed until this instant passes.
+    /// Set on every cursor movement; expires 100 ms after the last move.
+    /// This prevents the terminal from transmitting raw pixel data (Kitty/Sixel)
+    /// on every j/k keypress, which causes noticeable input lag.
+    pub cover_render_after: Option<std::time::Instant>,
 }
 
 /// Extract a BV ID from a raw query string.
@@ -245,6 +251,7 @@ impl App {
             pending_bv_fetch: None,
             cover_manager: picker.map(CoverManager::new),
             force_redraw: false,
+            cover_render_after: None,
         };
 
         // Prewarm cover cache for all known tracks so L1 is populated from disk
@@ -1125,6 +1132,10 @@ impl App {
                 self.playlist_cursor = new;
                 self.ui.playlist_list_state.select(Some(new));
                 self.ui.track_list_cursor = 0;
+                // Suppress cover re-render while scrolling the playlist column
+                self.cover_render_after = Some(
+                    std::time::Instant::now() + std::time::Duration::from_millis(120),
+                );
             }
             FocusColumn::TrackList => {
                 let len = self.active_track_list_len();
@@ -1134,6 +1145,11 @@ impl App {
                 let cur = self.ui.track_list_cursor as isize;
                 let new = (cur + delta).clamp(0, (len - 1) as isize);
                 self.ui.track_list_cursor = new as usize;
+                // Suppress cover re-render while the user is scrolling quickly.
+                // 120 ms after the last j/k the image will appear.
+                self.cover_render_after = Some(
+                    std::time::Instant::now() + std::time::Duration::from_millis(120),
+                );
             }
             _ => {}
         }

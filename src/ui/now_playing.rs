@@ -41,9 +41,18 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
         return;
     }
 
+    // Suppress cover rendering while the cursor is moving rapidly.
+    // `cover_render_after` is set on every j/k; cover shows once the cursor
+    // settles (debounce ~120 ms).  This eliminates Kitty/Sixel pixel-data
+    // transmission on every keypress and makes cursor movement feel instant.
+    let cover_suppressed = app
+        .cover_render_after
+        .map(|deadline| std::time::Instant::now() < deadline)
+        .unwrap_or(false);
+
     match displayed_track {
         None => draw_empty(f, inner),
-        Some(track) => draw_track(f, inner, track, cover_manager),
+        Some(track) => draw_track(f, inner, track, cover_manager, cover_suppressed),
     }
 }
 
@@ -78,7 +87,7 @@ fn draw_empty(f: &mut Frame, area: Rect) {
 
 // ── Track detail ─────────────────────────────────────────────────────────────
 
-fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Option<CoverManager>) {
+fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Option<CoverManager>, cover_suppressed: bool) {
     let cover_h = cover_height(area.height);
 
     // Constrain cover width: terminal chars are ~2:1 (w:h), so a square image
@@ -95,9 +104,15 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
     };
 
     // Try to render the actual cover image; fall back to ASCII placeholder.
-    let cover_rendered = match (cover_manager, &track.cover_url) {
-        (Some(mgr), Some(url)) => mgr.render_cover(url, cover_area, f),
-        _ => false,
+    // Skip the image entirely during the debounce window (cover_suppressed=true)
+    // so rapid j/k keystrokes don't cause expensive pixel-data transmissions.
+    let cover_rendered = if cover_suppressed {
+        false
+    } else {
+        match (cover_manager, &track.cover_url) {
+            (Some(mgr), Some(url)) => mgr.render_cover(url, cover_area, f),
+            _ => false,
+        }
     };
     if !cover_rendered {
         draw_cover_placeholder(f, cover_area);
