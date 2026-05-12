@@ -90,6 +90,17 @@ fn draw_empty(f: &mut Frame, area: Rect) {
 fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Option<CoverManager>, cover_suppressed: bool) {
     let cover_h = cover_height(area.height);
 
+    // Text block height: title + author + blank + meta + bvid = 5 lines.
+    const TEXT_LINES: u16 = 5;
+    const GAP: u16 = 1; // gap between cover and text
+
+    // Total height of the cover+gap+text block; clamp to available area.
+    let block_h = cover_h.saturating_add(GAP).saturating_add(TEXT_LINES);
+
+    // Vertically centre the whole block so the cover sits just above the text.
+    let v_offset = area.height.saturating_sub(block_h) / 2;
+    let block_top = area.y + v_offset;
+
     // Constrain cover width: terminal chars are ~2:1 (w:h), so a square image
     // looks correct at width = height * 2.  Center horizontally.
     let ideal_w = cover_h.saturating_mul(2);
@@ -98,7 +109,7 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
 
     let cover_area = Rect {
         x: area.x + x_offset,
-        y: area.y,
+        y: block_top,
         width: cover_w,
         height: cover_h.min(area.height),
     };
@@ -118,16 +129,16 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
         draw_cover_placeholder(f, cover_area);
     }
 
-    // Text sub-area: everything below the cover
-    let text_top = cover_h.saturating_add(1); // 1-row gap
-    if text_top >= area.height {
+    // Text sub-area: immediately below the cover (+ 1-row gap).
+    let text_y = block_top + cover_h + GAP;
+    if text_y >= area.y + area.height {
         return;
     }
     let text_area = Rect {
         x: area.x,
-        y: area.y + text_top,
+        y: text_y,
         width: area.width,
-        height: area.height - text_top,
+        height: (area.y + area.height).saturating_sub(text_y),
     };
 
     draw_track_info(f, text_area, track);
@@ -223,19 +234,11 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    let content_h = lines.len() as u16;
-    let v_offset = area.height.saturating_sub(content_h) / 2;
-    let render_area = Rect {
-        y: area.y + v_offset,
-        height: area.height.saturating_sub(v_offset),
-        ..area
-    };
-
     f.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true }),
-        render_area,
+        area,
     );
 }
 
