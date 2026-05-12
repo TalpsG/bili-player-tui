@@ -91,13 +91,14 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
     // Text lines: title + author + meta + bvid = 4 (no blank line).
     const TEXT_LINES: u16 = 4;
 
-    // Cover height: fill as much space as possible given two constraints:
-    //   • must leave TEXT_LINES rows below for metadata
-    //   • terminal chars are ~2:1 (w:h), so a square cover needs width = height×2;
-    //     if width is narrow, cap cover_h at width/2 to avoid a stretched rectangle.
-    let height_avail = area.height.saturating_sub(TEXT_LINES);
-    let width_avail = area.width / 2;
-    let cover_h = height_avail.min(width_avail).max(4);
+    // Bilibili covers are 16:9.  Terminal monospace chars are roughly 1:2
+    // (pixel width : pixel height), so a 16:9 image fills a character area
+    // whose aspect ratio is:  cols / rows = (16/9) * (px_h / px_w) = 16/9 * 2 = 32/9.
+    // Therefore: cover_h = cover_w * 9 / 32  →  no letterbox, no blank rows.
+    // Use the full inner width so the cover looks as large as possible.
+    let cover_w = area.width;
+    let max_cover_h = area.height.saturating_sub(TEXT_LINES);
+    let cover_h = (cover_w * 9 / 32).max(4).min(max_cover_h);
 
     // Total block = cover + text (no gap — cover sits directly above text).
     let block_h = cover_h.saturating_add(TEXT_LINES);
@@ -106,12 +107,8 @@ fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Opti
     let v_offset = area.height.saturating_sub(block_h) / 2;
     let block_top = area.y + v_offset;
 
-    // Cover width = height×2 for square appearance; centre horizontally.
-    let cover_w = cover_h.saturating_mul(2).min(area.width);
-    let x_offset = (area.width.saturating_sub(cover_w)) / 2;
-
     let cover_area = Rect {
-        x: area.x + x_offset,
+        x: area.x,
         y: block_top,
         width: cover_w,
         height: cover_h,
