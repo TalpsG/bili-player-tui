@@ -206,6 +206,14 @@ fn extract_bvid(query: &str) -> Option<String> {
 
 impl App {
     pub fn new(config: Config, picker: Option<ratatui_image::picker::Picker>) -> anyhow::Result<Self> {
+        Self::new_with_playlists(config, picker, PlaylistStore::load().map(|s| s.playlists).unwrap_or_default())
+    }
+
+    pub fn new_with_playlists(
+        config: Config,
+        picker: Option<ratatui_image::picker::Picker>,
+        playlists: Vec<Playlist>,
+    ) -> anyhow::Result<Self> {
         let logged_in = !config.bilibili.sessdata.is_empty();
         let client = BilibiliClient::new(Some(config.bilibili.sessdata.clone()));
         let mut player = MpvBackend::new()?;
@@ -217,9 +225,7 @@ impl App {
             client,
             player,
             queue: Queue::new(),
-            playlists: PlaylistStore::load()
-                .map(|s| s.playlists)
-                .unwrap_or_default(),
+            playlists,
             playlist_cursor: 0,
             playlist_name_input: String::new(),
             add_to_playlist_cursor: 0,

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::bilibili::api::BilibiliClient;
 use crate::error::BilibiliError;
@@ -7,12 +8,19 @@ use crate::queue::track::Track;
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
     code: i64,
+    message: Option<String>,
     data: Option<SearchData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SearchData {
-    result: Option<Vec<SearchItem>>,
+    result: Option<Vec<SearchResultBlock>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchResultBlock {
+    result_type: String,
+    data: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,19 +42,18 @@ pub async fn search_videos(
     page: u32,
 ) -> Result<Vec<Track>, BilibiliError> {
     let params = vec![
-        ("search_type".to_string(), "video".to_string()),
         ("keyword".to_string(), keyword.to_string()),
         ("page".to_string(), page.to_string()),
     ];
 
     let resp: SearchResponse = client
-        .get("/x/web-interface/search/type", params, true)
+        .get("/x/web-interface/search/all/v2", params, false)
         .await?;
 
     if resp.code != 0 {
         return Err(BilibiliError::ApiResponse {
             code: resp.code,
-            message: "Search failed".into(),
+            message: resp.message.unwrap_or_else(|| "Search failed".into()),
         });
     }
 
@@ -54,7 +61,14 @@ pub async fn search_videos(
         BilibiliError::Parse("No data in search response".into())
     })?;
 
-    let results = data.result.unwrap_or_default();
+    let results = data
+        .result
+        .unwrap_or_default()
+        .into_iter()
+        .find(|block| block.result_type == "video")
+        .map(parse_video_items)
+        .unwrap_or_default();
+
     let tracks = results
         .into_iter()
         .filter(|item| !item.bvid.is_empty())
@@ -64,12 +78,31 @@ pub async fn search_videos(
             title: strip_html_tags(&item.title),
             author: item.author,
             duration: parse_duration(&item.duration),
-            cover_url: item.pic,
+            cover_url: normalize_cover_url(item.pic),
             source: None,
         })
         .collect();
 
     Ok(tracks)
+}
+
+fn parse_video_items(block: SearchResultBlock) -> Vec<SearchItem> {
+    block
+        .data
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| serde_json::from_value(item).ok())
+        .collect()
+}
+
+fn normalize_cover_url(pic: Option<String>) -> Option<String> {
+    pic.map(|url| {
+        if url.starts_with("//") {
+            format!("https:{url}")
+        } else {
+            url
+        }
+    })
 }
 
 /// Strip HTML tags from Bilibili search results (titles contain <em> highlights).
@@ -136,6 +169,131 @@ mod tests {
         assert_eq!(strip_html_tags("hello <em>world</em>"), "hello world");
         assert_eq!(strip_html_tags("no tags"), "no tags");
         assert_eq!(strip_html_tags("<em>all</em> <em>tags</em>"), "all tags");
+    }
+
+    #[test]
+    fn test_normalize_cover_url() {
+        assert_eq!(
+            normalize_cover_url(Some("//i0.hdslb.com/test.jpg".to_string())),
+            Some("https://i0.hdslb.com/test.jpg".to_string())
+        );
+        assert_eq!(
+            normalize_cover_url(Some("https://i0.hdslb.com/test.jpg".to_string())),
+            Some("https://i0.hdslb.com/test.jpg".to_string())
+        );
+        assert_eq!(normalize_cover_url(None), None);
+    }
+
+    #[test]
+    fn test_parse_search_all_v2_mixed_blocks() {
+        let json = r#"
+        {
+          "code": 0,
+          "message": "OK",
+          "data": {
+            "result": [
+              {
+                "result_type": "bili_user",
+                "data": [
+                  {
+                    "mid": 1,
+                    "uname": "user only"
+                  }
+                ]
+              },
+              {
+                "result_type": "video",
+                "data": [
+                  {
+                    "bvid": "BV1xx411c7mD",
+                    "title": "hello <em>world</em>",
+                    "author": "tester",
+                    "duration": "3:45",
+                    "pic": "//i0.hdslb.com/test.jpg"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        "#;
+
+        let resp: SearchResponse = serde_json::from_str(json).unwrap();
+        let results = resp
+            .data
+            .unwrap()
+            .result
+            .unwrap()
+            .into_iter()
+            .find(|block| block.result_type == "video")
+            .map(parse_video_items)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].bvid, "BV1xx411c7mD");
+        assert_eq!(strip_html_tags(&results[0].title), "hello world");
+        assert_eq!(
+            normalize_cover_url(results[0].pic.clone()),
+            Some("https://i0.hdslb.com/test.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_search_all_v2_null_block_data() {
+        let json = r#"
+        {
+          "code": 0,
+          "message": "OK",
+          "data": {
+            "result": [
+              {
+                "result_type": "tips",
+                "data": null
+              },
+              {
+                "result_type": "video",
+                "data": [
+                  {
+                    "bvid": "BV1xx411c7mD",
+                    "title": "hello",
+                    "author": "tester",
+                    "duration": "3:45",
+                    "pic": null
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        "#;
+
+        let resp: SearchResponse = serde_json::from_str(json).unwrap();
+        let results = resp
+            .data
+            .unwrap()
+            .result
+            .unwrap()
+            .into_iter()
+            .find(|block| block.result_type == "video")
+            .map(parse_video_items)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].author, "tester");
+    }
+
+    #[tokio::test]
+    #[ignore = "live network probe"]
+    async fn test_live_anonymous_search_smoke() {
+        let client = BilibiliClient::new(None);
+        let results = search_videos(&client, "jay", 1).await.unwrap();
+
+        assert!(!results.is_empty(), "expected at least one search result");
+        eprintln!(
+            "live search ok: count={} first={:?}",
+            results.len(),
+            results.first().map(|track| (&track.bvid, &track.title, &track.author))
+        );
     }
 
     #[test]
