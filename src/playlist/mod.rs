@@ -22,10 +22,14 @@ impl Playlist {
         }
     }
 
-    /// Append a track if it is not already present (dedup by `bvid`).
+    /// Append a track if it is not already present.
+    ///
+    /// Dedup is by *playable item* (`bvid` + `cid`), not by `bvid` alone —
+    /// otherwise two parts of the same multi-part video would collide and only
+    /// the first one could ever be added.
     /// Returns `true` if the track was actually inserted.
     pub fn add_track(&mut self, track: Track) -> bool {
-        if self.tracks.iter().any(|t| t.bvid == track.bvid) {
+        if self.tracks.iter().any(|t| t.same_item(&track)) {
             return false;
         }
         self.tracks.push(track);
@@ -56,8 +60,18 @@ mod tests {
             author: "a".to_string(),
             duration: Duration::from_secs(60),
             cover_url: None,
+            part: None,
+            page: None,
             source: None,
         }
+    }
+
+    fn part(bvid: &str, cid: u64, page: u32) -> Track {
+        let mut t = t(bvid);
+        t.cid = cid;
+        t.page = Some(page);
+        t.part = Some(format!("P{page}"));
+        t
     }
 
     #[test]
@@ -66,6 +80,21 @@ mod tests {
         assert!(pl.add_track(t("BV1")));
         assert!(!pl.add_track(t("BV1"))); // duplicate → rejected
         assert!(pl.add_track(t("BV2")));
+        assert_eq!(pl.tracks.len(), 2);
+    }
+
+    #[test]
+    fn different_parts_of_same_video_both_allowed() {
+        let mut pl = Playlist::new("test");
+        assert!(pl.add_track(part("BV1", 111, 1)));
+        assert!(
+            pl.add_track(part("BV1", 222, 2)),
+            "P2 of a video must not be deduped against P1"
+        );
+        assert!(
+            !pl.add_track(part("BV1", 222, 2)),
+            "exact same part is a duplicate"
+        );
         assert_eq!(pl.tracks.len(), 2);
     }
 

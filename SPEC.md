@@ -55,7 +55,7 @@ bili-player-cli 是一个终端音乐播放器，播放来自 Bilibili 视频的
 | Q-4 | 从队列移除 | P1 | 删除指定曲目 |
 | Q-5 | 清空队列 | P1 | 一键清空 |
 | Q-6 | Shuffle | P1 | 随机播放，保持原始顺序不变（排列索引方案） |
-| Q-7 | Repeat | P1 | 三种模式：关/列表循环/单曲循环 |
+| Q-7 | Repeat / Shuffle | P1 | `r` 循环切换四种模式：顺序 / 列表循环 / 单曲循环 / 随机 |
 | Q-8 | 队列持久化 | P1 | 退出时保存，启动时恢复 |
 
 **验收标准:**
@@ -131,6 +131,64 @@ bili-player-cli 是一个终端音乐播放器，播放来自 Bilibili 视频的
 | C-3 | 指定配置 | P2 | `--config path/to/config.toml` |
 | C-4 | 调试模式 | P2 | `--debug` 输出详细日志 |
 
+### 2.8 多 P（分P）
+
+| ID | 功能 | 优先级 | 说明 |
+|----|------|--------|------|
+| MP-1 | 分 P 列表获取 | P0 | `GET /x/player/pagelist?bvid=...`，一次返回全部 P，无需 WBI 签名 |
+| MP-2 | 后台预取 | P0 | 每次 tick 对可见列表前 30 项预取分 P 表并缓存；并发上限 4，命中 `pages_cache` / `pages_loading` 的跳过 |
+| MP-3 | 树形折叠 | P0 | 中栏把多 P 视频渲染成父行 + 分P 子行，光标在 `visible_rows()`（行模型）而非队列下标上移动 |
+| MP-4 | 展开 / 折叠 | P0 | 多 P 行按 `Enter` 或 `e` 折叠，**队列视图与歌单视图一致**；只有 1 个 P 的视频没有折叠标记 |
+| MP-5 | 整集顺序入队 | P0 | 队列视图播放某个 P 时，把同视频后续分P 顺序插入其后面，`n` 可顺着播完一整集 |
+| MP-9 | 歌单覆盖队列 | P0 | 歌单视图 `Enter` 用**整个歌单**替换队列（含光标上方的曲目，多 P 视频展开成各个 P），再把播放位置设在光标所在行 |
+| MP-6 | 不退化 | P0 | 分 P 表未就绪时 `Enter` 仍立即播放 P1，不出现"按了没反应" |
+| MP-7 | 独立 Track | P0 | 每个 P 是一条独立 `Track`（`part` / `page`），复用队列 / 随机 / 循环 / 持久化 / 歌单去重 |
+| MP-8 | 范围 | P1 | 本次只覆盖中栏（队列视图 + 歌单视图），搜索结果弹窗暂不支持展开 |
+
+**行模型（`TrackRow`）**
+
+```
+enum TrackRow { Video(usize), Page(usize, usize) }
+//              队列下标      队列下标  分P 下标
+```
+
+中栏渲染和用户光标都基于 `App::visible_rows()`（展开状态展开后的扁平行列表），`RemoveFromQueue` / `RemoveFromPlaylist` 只对 `Video` 行生效——分P 行是从父视频派生出来的，不能单独删除。
+
+**折叠标记**（避免与"正在播放"冲突）
+
+| 标记 | 含义 |
+|------|------|
+| `▶` | 当前正在播放的行 |
+| `▾` | 已展开的多 P 视频 |
+| `▸` | 未展开的多 P 视频 |
+| `…` | 多 P 但分 P 表还在拉取中 |
+| （空） | 单 P 视频，或分 P 行本身 |
+
+**分P 分组标题**
+
+从歌单进入多 P 视频后，队列里是一串分P条目（母视频行并不在队列中）。相邻几个视频的分P会连成一片 `P1 · …` 分不清归属，所以每组分P的第一行前面会插入一行**视频标题**：
+
+```
+    WhiteAlbum - UP主          ← 分组标题（不是队列条目）
+  ▶     P1 · 01 届かない恋
+        P2 · 02 恋のような
+    Setsuna - UP主             ← 下一组
+        P1 · …
+```
+
+标题行对应 `TrackRow::PartGroupHeader(i)`：不是可播放条目，`Enter` 播放该组第一个分P，`d` 对它无效。当母视频行已经在屏幕上（展开状态）时不再插入标题行，避免重复。
+
+**验收标准:**
+- [ ] 分 P 表拉取完成前按 `Enter` 仍能立即播放
+- [ ] 折叠时若光标位于即将消失的子行内，光标回到父行
+- [ ] 折叠时若光标在更后面的行，光标按被移除的行数上移（保持在同一个曲目上）
+- [ ] 同一个视频的不同 P 可以同时存在于一个歌单里
+- [ ] 旧版 `state.json` / `playlists.json`（无 `part` / `page` 字段）能正常加载
+- [ ] 歌单视图对多 P 行按 `Enter` 是展开而不是播放
+- [ ] 歌单视图对中间某一行按 `Enter`，队列里**保留光标上方的曲目**，且播放位置在该行
+- [ ] 歌单视图对分P 行按 `Enter`，队列含整个歌单，播放位置在该分P
+- [ ] 队列视图对已入队的分P 条目按 `Enter` 是播放而不是展开（叶子行）
+
 ---
 
 ## 3. 非功能需求
@@ -174,13 +232,30 @@ bili-player-cli 是一个终端音乐播放器，播放来自 Bilibili 视频的
 
 ```
 Track {
-    bvid: String,          // BV 号，唯一标识
+    bvid: String,          // BV 号
     cid: u64,              // 分 P 的 cid
     title: String,         // 标题
     author: String,        // UP主
     duration: Duration,    // 时长
     cover_url: Option<String>,  // 封面 URL
+    part: Option<String>,  // 分 P 标题（单 P 视频为 None）
+    page: Option<u32>,     // 第几个 P，从 1 开始（单 P 视频为 None）
     source: Option<TrackSource>, // 音频流（懒解析）
+}
+```
+
+> **去重键是 `(bvid, cid)`，不是 `bvid`。** 一个多 P 视频的每个 P 都是一条独立的 `Track`，因此队列去重、歌单去重都按 `(bvid, cid)` 判断。`part` / `page` 两个字段都带 `#[serde(default)]`，旧版 `state.json` / `playlists.json` 可以直接反序列化。
+
+### VideoPage
+
+`/x/player/pagelist` 返回的分 P 条目。`VideoPage::to_track()` 会把它物化成一个独立的 `Track`：继承父视频的 `bvid` / `author` / `cover_url`，覆盖 `cid` / `duration`，写入 `part` / `page`，并把 `source` 置为 `None`（音频流必须按 P 重新解析）。
+
+```
+VideoPage {
+    cid: u64,          // 该 P 的 cid，与 Track.cid 对应
+    page: u32,         // 第几个 P，从 1 开始
+    part: String,      // 该 P 的标题
+    duration_secs: u64 // 该 P 的时长（秒）
 }
 ```
 
@@ -234,10 +309,15 @@ Playlist {
 
 | 端点 | 用途 | 鉴权 |
 |------|------|------|
-| `/x/web-interface/search/type` | 搜索 | WBI |
+| `/x/web-interface/search/all/v2` | 搜索 | WBI |
 | `/x/web-interface/wbi/view` | 视频信息 | WBI |
+| `/x/player/pagelist` | 分 P 列表（一次返回全部 P，**无需 WBI 签名**） | 无 |
 | `/x/player/wbi/playurl` | 音频流 URL | WBI + SESSDATA |
 | `/x/web-interface/nav` | 用户信息 + WBI key | SESSDATA |
+
+> **搜索接口不返回分 P 数量**（`search/all/v2` 与 `search/type` 都没有），只有 `/x/player/pagelist` 有。因此多 P 标记只能在拿到搜索结果后再补拉，见 [2.8 多 P（分P）](#28-多-p分p)。
+>
+> 搜索结果里的 `duration` 是**整集总时长**（例如 `222:28`），不是单个 P 的时长；单 P 时长取自 `VideoPage.duration_secs`。
 
 ### 5.3 音频流解析优先级
 
@@ -298,8 +378,8 @@ Playlist {
 | `k` / `↑` | 焦点在详情栏时：音量 +5 |
 | `↑` / `↓` | 焦点在列表栏时：光标移动；焦点在详情栏时：音量 ±5 |
 | `m` | 静音切换 |
-| `s` | Shuffle 切换 |
-| `r` | Repeat 模式切换 (关→列表→单曲) |
+| `s` | 无操作（历史上是 Shuffle，现已并入 `r`） |
+| `r` | 播放模式循环切换（顺序 → 列表循环 → 单曲循环 → 随机） |
 
 ### 列表导航 (焦点在歌单栏或曲目栏时)
 
@@ -311,12 +391,16 @@ Playlist {
 | `K` / `PageUp` | 上翻一页 |
 | `g` / `Home` | 跳到顶部 |
 | `G` / `End` | 跳到底部 |
-| `Enter` (队列视图) | 播放选中曲目 |
-| `Enter` (歌单视图) | 将整个歌单替换队列，从选中位置开始播放 |
-| `a` | 添加选中曲目到队列（去重；若已存在则跳转并立即播放） |
-| `A` (`Shift+A`) | 弹出"添加到歌单"选择 popup |
-| `d` (队列视图) | 从队列移除选中曲目 |
-| `d` (歌单视图) | 从当前歌单移除选中曲目 |
+| `Enter` (单 P) | 播放选中曲目 |
+| `Enter` (多 P) | 展开 / 折叠该视频的分 P（不播放）——队列视图与歌单视图一致 |
+| `Enter` (队列视图，分P 行) | 播放该分 P，并把同视频的后续分P 顺序插入当前播放位置之后 |
+| `Enter` (歌单视图，分P 行) | 用**整个歌单**替换队列（多 P 视频展开成各个 P），从该分 P 开始播放 |
+| `Enter` (歌单视图，普通行) | 用**整个歌单**替换队列（**含光标上方的曲目**），从选中位置开始播放 |
+| `e` | 展开 / 折叠选中视频的分 P（与 `Enter` 在多 P 行上等价） |
+| `a` | 添加选中曲目到队列（分P 行只加该 P，视频行加整集；按 `(bvid, cid)` 去重，若已存在则跳转并立即播放） |
+| `A` (`Shift+A`) | 弹出"添加到歌单"选择 popup（分P 行会把该 P 作为独立条目加入） |
+| `d` (队列视图) | 从队列移除选中曲目（分P 行无效） |
+| `d` (歌单视图) | 从当前歌单移除选中曲目（分P 行无效） |
 | `c` (焦点在歌单栏) | 弹出"创建歌单"输入 popup |
 | `d` (焦点在歌单栏) | 弹出"删除歌单"确认 popup（Queue 行不可删除） |
 
@@ -369,12 +453,19 @@ Playlist {
 | `bilibili/wbi` | mixin key 推导 | P0 |
 | `bilibili/search` | 搜索结果解析 | P0 |
 | `bilibili/video` | 视频信息解析 | P0 |
+| `bilibili/video` | `pagelist` 响应解析（真实 50P JSON 结构）+ `VideoPage::to_track` | P0 |
 | `bilibili/stream` | DASH 响应解析 + 音频质量选择 | P0 |
+| `queue/track` | `part` / `page` 字段的旧 JSON 兼容与往返序列化 | P0 |
+| `queue/track` | `same_item` 按 `(bvid, cid)` 区分不同 P | P0 |
 | `queue` | 队列操作 (添加/移除/跳转) | P0 |
+| `queue` | `insert_batch_after` 批量插入（整集入队） | P0 |
 | `queue` | Shuffle 排列生成与切换 | P0 |
 | `queue` | Repeat 模式切换 | P0 |
 | `playlist` | 歌单 CRUD | P0 |
+| `playlist` | 按 `(bvid, cid)` 去重，允许同一视频的不同 P 共存 | P0 |
 | `playlist/storage` | JSON 序列化/反序列化 | P0 |
+| `app` | `TrackRow` 行模型、展开/折叠、折叠后光标 clamp、整集入队 | P0 |
+| `ui` | 中栏分P 树形渲染（折叠标记 / 分P 行） | P0 |
 | `config` | 配置加载/保存 | P1 |
 | `command` | 命令解析 | P1 |
 
@@ -410,7 +501,7 @@ Playlist {
 - [ ] 下一首/上一首，确认切换正常
 - [ ] 音量调节，确认变化
 - [ ] Shuffle 切换，确认随机播放
-- [ ] Repeat 切换，确认三种模式
+- [ ] `r` 循环切换播放模式，确认四种模式（顺序 / 列表循环 / 单曲循环 / 随机）
 - [ ] 创建歌单 (`c` 在歌单栏)，弹出输入 popup，输入名称后 Enter 确认
 - [ ] 空名称时显示错误提示，Esc 取消无副作用
 - [ ] `Shift+A` 弹出歌单选择 popup，选中后曲目加入歌单
@@ -424,6 +515,13 @@ Playlist {
 - [ ] 无效 SESSDATA，确认错误提示
 - [ ] 网络断开后恢复，确认行为
 - [ ] `bili-player-cli play BV1xx...` 直接播放
+- [ ] 搜索结果里的多 P 视频，等待预取后出现 `▸` 标记
+- [ ] 队列视图对多 P 行按 `Enter`，确认展开为分P 行（`▾`），再按一次收起
+- [ ] 选中某个分P 行按 `Enter`，确认播放该 P 且后续分P 已入队，`n` 能连续播完
+- [ ] 歌单视图对多 P 行按 `e`，确认展开 / 折叠
+- [ ] 歌单视图对视频行按 `a`，确认整集所有 P 都进了队列
+- [ ] 对分P 行按 `d`，确认无操作（不能删除派生行）
+- [ ] 把同一个视频的两个不同 P 加入同一歌单，确认都能保留
 
 ---
 

@@ -13,6 +13,26 @@ fn setup_test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
 }
 
 /// Helper to check if buffer contains a string anywhere (ignoring internal spaces for wide-char robustness)
+/// Column at which `needle` first appears, compared cell by cell.
+///
+/// Walking cells (rather than concatenating symbols) keeps wide characters from
+/// shifting the result: they occupy two cells but contribute one symbol.
+fn column_of(buffer: &Buffer, needle: &str) -> Option<usize> {
+    let cells: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width.saturating_sub(cells.len() as u16) {
+            let hit = cells
+                .iter()
+                .enumerate()
+                .all(|(i, want)| buffer[(x + i as u16, y)].symbol() == want.as_str());
+            if hit {
+                return Some(x as usize);
+            }
+        }
+    }
+    None
+}
+
 fn buffer_contains(buffer: &Buffer, pattern: &str) -> bool {
     for y in 0..buffer.area.height {
         let mut line = String::new();
@@ -42,6 +62,8 @@ fn dummy_track(title: &str) -> Track {
         author: "Test Author".to_string(),
         duration: Duration::from_secs(180),
         cover_url: None,
+        part: None,
+        page: None,
         source: None,
     }
 }
@@ -180,19 +202,162 @@ fn test_middle_column_shows_playlist_tracks() {
 }
 
 #[test]
-fn test_active_track_list_len_queue() {
+fn test_visible_row_len_queue() {
     let mut app = test_app();
     app.queue.push(dummy_track("A"));
     app.queue.push(dummy_track("B"));
-    assert_eq!(app.active_track_list_len(), 2);
+    assert_eq!(app.visible_row_len(), 2);
 }
 
 #[test]
-fn test_active_track_list_len_playlist() {
+fn test_visible_row_len_playlist() {
     let mut app = test_app();
     let mut pl = crate::playlist::Playlist::new("P");
     pl.add_track(dummy_track("X"));
     app.playlists.push(pl);
     app.playlist_cursor = 1;
-    assert_eq!(app.active_track_list_len(), 1);
+    assert_eq!(app.visible_row_len(), 1);
+}
+
+// ── Multi-part (分P) rendering ───────────────────────────────────────────────
+
+fn parts(n: u32) -> Vec<crate::bilibili::video::VideoPage> {
+    (1..=n)
+        .map(|i| crate::bilibili::video::VideoPage {
+            cid: 1000 + i as u64,
+            page: i,
+            part: format!("part {i}"),
+            duration_secs: 60 + i as u64,
+        })
+        .collect()
+}
+
+/// A multi-part video whose part list is known is marked with `▸`.
+#[test]
+fn test_multi_part_row_shows_fold_marker() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let track = dummy_track("Collection");
+    app.pages_cache.insert(track.bvid.clone(), parts(3));
+    app.queue.push(track);
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert!(
+        buffer_contains(terminal.backend().buffer(), "▸"),
+        "a known multi-part video must be marked as foldable"
+    );
+}
+
+/// Expanded parts render as their own indented rows.
+#[test]
+fn test_expanded_parts_render_as_rows() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let track = dummy_track("Collection");
+    app.pages_cache.insert(track.bvid.clone(), parts(3));
+    app.expanded.insert(track.bvid.clone());
+    app.queue.push(track);
+
+    assert_eq!(app.visible_row_len(), 4, "1 video row + 3 part rows");
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(
+        buffer_contains(buffer, "▾"),
+        "expanded rows use the ▾ marker"
+    );
+    assert!(buffer_contains(buffer, "P1·part1"));
+    assert!(buffer_contains(buffer, "P3·part3"));
+}
+
+/// A single-part video gets no fold marker at all.
+#[test]
+fn test_single_part_row_has_no_marker() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let track = dummy_track("Single");
+    app.pages_cache.insert(track.bvid.clone(), parts(1));
+    app.queue.push(track);
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(!buffer_contains(buffer, "▸"));
+    assert!(!buffer_contains(buffer, "▾"));
+    assert!(buffer_contains(buffer, "Single"));
+}
+
+#[test]
+fn test_part_rows_are_indented_past_video_rows() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let track = dummy_track("Collection");
+    app.pages_cache.insert(track.bvid.clone(), parts(3));
+    app.expanded.insert(track.bvid.clone());
+    app.queue.push(track);
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let video_col = column_of(buffer, "Collection").expect("the video row renders its title");
+    let part_col = column_of(buffer, "P1 · part 1").expect("the part row renders its part name");
+    assert!(
+        part_col >= video_col + 4,
+        "part rows must indent past video rows (part {part_col}, video {video_col})"
+    );
+}
+
+#[test]
+fn test_queued_parts_are_labelled_with_their_video() {
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let base = dummy_track("WhiteAlbum");
+    let pages = parts(3);
+    app.pages_cache.insert(base.bvid.clone(), pages.clone());
+    for page in &pages {
+        app.queue.push(page.to_track(&base));
+    }
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let title_col = column_of(buffer, "WhiteAlbum - Test Author")
+        .expect("the video title labels the run of parts");
+    let part_col = column_of(buffer, "P1 · part 1").expect("the parts still render");
+    assert!(
+        title_col < part_col,
+        "the title sits above/left of its parts (title {title_col}, part {part_col})"
+    );
+}
+
+#[test]
+fn test_queued_part_rows_show_part_names() {
+    // Entering a multi-part video from a playlist fills the queue with
+    // part-level tracks.  They used to render as the video title, so every part
+    // of one video looked identical.
+    let mut terminal = setup_test_terminal(80, 24);
+    let mut app = test_app();
+    let base = dummy_track("Collection");
+    let pages = parts(3);
+    app.pages_cache.insert(base.bvid.clone(), pages.clone());
+    app.queue.push(dummy_track("Solo"));
+    for page in &pages {
+        app.queue.push(page.to_track(&base));
+    }
+
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    for i in 1..=3 {
+        assert!(
+            buffer_contains(buffer, &format!("P{i}·part{i}")),
+            "queued part {i} shows its own name"
+        );
+    }
+
+    let video_col = column_of(buffer, "Solo").expect("the plain video row renders");
+    let part_col = column_of(buffer, "P1 · part 1").expect("the queued part renders");
+    assert!(
+        part_col >= video_col + 4,
+        "queued parts indent like any other part row (part {part_col}, video {video_col})"
+    );
 }

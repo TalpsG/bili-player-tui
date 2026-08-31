@@ -71,6 +71,8 @@ mod tests {
             author: "author".to_string(),
             duration: Duration::from_secs(180),
             cover_url: None,
+            part: None,
+            page: None,
             source: None,
         }
     }

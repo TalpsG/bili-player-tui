@@ -79,6 +79,8 @@ pub async fn search_videos(
             author: item.author,
             duration: parse_duration(&item.duration),
             cover_url: normalize_cover_url(item.pic),
+            part: None,
+            page: None,
             source: None,
         })
         .collect();

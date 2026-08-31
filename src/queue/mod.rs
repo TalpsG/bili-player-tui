@@ -103,6 +103,25 @@ impl Queue {
         }
     }
 
+    /// Insert several tracks (in order) right after `index`, or at the end when
+    /// `index` is `None`.  Returns the index of the first inserted track.
+    ///
+    /// Used to enqueue the remaining parts of a multi-part video so that `n`
+    /// walks through them in order.
+    pub fn insert_batch_after(&mut self, index: Option<usize>, tracks: Vec<Track>) -> usize {
+        let start = index
+            .map(|i| (i + 1).min(self.tracks.len()))
+            .unwrap_or(self.tracks.len());
+
+        for (pos, track) in (start..).zip(tracks) {
+            self.tracks.insert(pos, track);
+        }
+        if self.current_index.is_none() && !self.tracks.is_empty() {
+            self.current_index = Some(0);
+        }
+        start
+    }
+
     /// Remove track at index. Adjusts current_index.
     pub fn remove(&mut self, index: usize) -> Option<Track> {
         if index >= self.tracks.len() {
@@ -300,6 +319,8 @@ mod tests {
             author: "test".to_string(),
             duration: Duration::from_secs(180),
             cover_url: None,
+            part: None,
+            page: None,
             source: None,
         }
     }
@@ -437,6 +458,61 @@ mod tests {
             vec!["A", "B", "C"]
         );
         assert_eq!(q.current_index(), Some(0));
+    }
+
+    #[test]
+    fn test_insert_batch_after_preserves_order() {
+        let mut q = Queue::new();
+        q.push(test_track("A"));
+        q.push(test_track("Z"));
+        q.jump_to(0); // current = A
+
+        let first = q.insert_batch_after(Some(0), vec![test_track("B"), test_track("C")]);
+        assert_eq!(
+            first, 1,
+            "first inserted track lands right after the given index"
+        );
+        assert_eq!(
+            q.tracks()
+                .iter()
+                .map(|t| t.title.clone())
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C", "Z"]
+        );
+    }
+
+    #[test]
+    fn test_insert_batch_after_none_appends() {
+        let mut q = Queue::new();
+        q.push(test_track("A"));
+
+        let first = q.insert_batch_after(None, vec![test_track("B"), test_track("C")]);
+        assert_eq!(first, 1);
+        assert_eq!(
+            q.tracks()
+                .iter()
+                .map(|t| t.title.clone())
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+    }
+
+    #[test]
+    fn test_insert_batch_after_empty_queue() {
+        let mut q = Queue::new();
+        let first = q.insert_batch_after(None, vec![test_track("A")]);
+        assert_eq!(first, 0);
+        assert_eq!(q.current_index(), Some(0), "first insert becomes current");
+    }
+
+    #[test]
+    fn test_insert_batch_after_out_of_range_index() {
+        let mut q = Queue::new();
+        q.push(test_track("A"));
+        // Index far past the end must clamp instead of panicking.
+        let first = q.insert_batch_after(Some(99), vec![test_track("B")]);
+        assert_eq!(first, 1);
+        assert_eq!(q.len(), 2);
     }
 
     #[test]

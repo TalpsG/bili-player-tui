@@ -20,14 +20,10 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
         app.ui.theme.unfocused_border
     };
 
-    // Right panel shows the track under the cursor; falls back to now-playing
-    // when the cursor points outside the list or no track is selected.
-    let cursor_track: Option<&Track> = {
-        let tracks = app.active_track_list();
-        let idx = app.ui.track_list_cursor;
-        tracks.get(idx)
-    };
-    let displayed_track = cursor_track.or_else(|| app.queue.current_track());
+    // Right panel shows whatever row the middle-column cursor is on — a video
+    // row or one of its parts (分P); falls back to now-playing.
+    let cursor_track: Option<Track> = app.current_row().and_then(|row| app.row_track(row));
+    let displayed_track = cursor_track.as_ref().or_else(|| app.queue.current_track());
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -94,8 +90,9 @@ fn draw_track(
     cover_manager: &mut Option<CoverManager>,
     cover_suppressed: bool,
 ) {
-    // Text lines: title + author + meta + bvid = 4 (no blank line).
-    const TEXT_LINES: u16 = 4;
+    // Text lines: title + author + meta + bvid = 4 (no blank line),
+    // plus one more line naming the part when showing a 分P.
+    let text_lines: u16 = if track.part.is_some() { 5 } else { 4 };
 
     // Bilibili covers are 16:9.  Terminal monospace chars are roughly 1:2
     // (pixel width : pixel height), so a 16:9 image fills a character area
@@ -103,11 +100,11 @@ fn draw_track(
     // Therefore: cover_h = cover_w * 9 / 32  →  no letterbox, no blank rows.
     // Use the full inner width so the cover looks as large as possible.
     let cover_w = area.width;
-    let max_cover_h = area.height.saturating_sub(TEXT_LINES);
+    let max_cover_h = area.height.saturating_sub(text_lines);
     let cover_h = (cover_w * 9 / 32).max(4).min(max_cover_h);
 
     // Total block = cover + text (no gap — cover sits directly above text).
-    let block_h = cover_h.saturating_add(TEXT_LINES);
+    let block_h = cover_h.saturating_add(text_lines);
 
     // Vertically centre the whole block.
     let v_offset = area.height.saturating_sub(block_h) / 2;
@@ -216,6 +213,18 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
         track.author.clone(),
         Style::default().fg(Color::Gray),
     )));
+
+    // Part (分P) — only for page-level tracks
+    if let Some(part) = &track.part {
+        let label = match track.page {
+            Some(page) => format!("P{page} · {part}"),
+            None => part.clone(),
+        };
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default().fg(Color::Yellow),
+        )));
+    }
 
     // Duration (always present) — append quality only once source is resolved
     let dur = super::format_duration(Some(track.duration));

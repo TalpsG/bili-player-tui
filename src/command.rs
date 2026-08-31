@@ -21,6 +21,8 @@ pub enum Command {
     MoveCursorTop,
     MoveCursorBottom,
     PlaySelected,
+    /// Expand / collapse the parts (分P) of the track under the cursor.
+    ToggleExpand,
     AddToQueue,
     RemoveFromQueue,
     OpenSearch,

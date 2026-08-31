@@ -195,6 +195,13 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
             FocusColumn::Playlist => Command::FocusTrackListColumn,
             _ => Command::PlaySelected,
         },
+        // Expand / collapse the parts (分P) of the track under the cursor.
+        // Enter already does this for multi-part rows in the queue view, but a
+        // playlist row needs a dedicated key because Enter means "play from here".
+        (KeyModifiers::NONE, KeyCode::Char('e')) => match focus {
+            FocusColumn::TrackList => Command::ToggleExpand,
+            _ => Command::Noop,
+        },
         (KeyModifiers::NONE, KeyCode::Char('a')) => Command::AddToQueue,
         (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
         (KeyModifiers::NONE, KeyCode::Char('c')) => match focus {
