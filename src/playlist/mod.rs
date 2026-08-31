@@ -64,7 +64,7 @@ mod tests {
     fn dedup_by_bvid() {
         let mut pl = Playlist::new("test");
         assert!(pl.add_track(t("BV1")));
-        assert!(!pl.add_track(t("BV1")));  // duplicate → rejected
+        assert!(!pl.add_track(t("BV1"))); // duplicate → rejected
         assert!(pl.add_track(t("BV2")));
         assert_eq!(pl.tracks.len(), 2);
     }

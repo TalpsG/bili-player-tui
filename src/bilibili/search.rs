@@ -57,9 +57,9 @@ pub async fn search_videos(
         });
     }
 
-    let data = resp.data.ok_or_else(|| {
-        BilibiliError::Parse("No data in search response".into())
-    })?;
+    let data = resp
+        .data
+        .ok_or_else(|| BilibiliError::Parse("No data in search response".into()))?;
 
     let results = data
         .result
@@ -292,7 +292,9 @@ mod tests {
         eprintln!(
             "live search ok: count={} first={:?}",
             results.len(),
-            results.first().map(|track| (&track.bvid, &track.title, &track.author))
+            results
+                .first()
+                .map(|track| (&track.bvid, &track.title, &track.author))
         );
     }
 

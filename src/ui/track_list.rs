@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::app::{App, FocusColumn};
 use crate::ui::Ui;
@@ -14,7 +14,11 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, area: Rect) {
 
     let is_queue_view = app.playlist_cursor == 0;
     let tracks = app.active_track_list();
-    let current_idx = if is_queue_view { app.queue.current_index() } else { None };
+    let current_idx = if is_queue_view {
+        app.queue.current_index()
+    } else {
+        None
+    };
 
     let items: Vec<ListItem> = tracks
         .iter()

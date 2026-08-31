@@ -15,10 +15,10 @@ pub mod volume_slider;
 #[cfg(test)]
 mod tests;
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Gauge, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -53,17 +53,24 @@ impl Default for Ui {
 pub fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     use unicode_width::UnicodeWidthStr;
     let left = " bili-player-cli";
-    let right = if app.logged_in { "已登录" } else { "未登录" };
-    
+    let right = if app.logged_in {
+        "已登录"
+    } else {
+        "未登录"
+    };
+
     let left_width = left.width();
     let right_width = right.width();
     let total_width = area.width as usize;
-    
+
     let space_count = total_width.saturating_sub(left_width + right_width);
     let padded = format!("{}{}{}", left, " ".repeat(space_count), right);
 
-    let header = Paragraph::new(padded)
-        .style(Style::default().fg(app.ui.theme.header_fg).bg(app.ui.theme.header_bg));
+    let header = Paragraph::new(padded).style(
+        Style::default()
+            .fg(app.ui.theme.header_fg)
+            .bg(app.ui.theme.header_bg),
+    );
     f.render_widget(header, area);
 }
 
@@ -109,8 +116,11 @@ pub fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text_display_width = unicode_width::UnicodeWidthStr::width(status_text.as_str());
     let padding = available.saturating_sub(text_display_width);
     let padded = format!("{}{}", " ".repeat(padding), status_text);
-    let info = Paragraph::new(padded)
-        .style(Style::default().fg(app.ui.theme.status_fg).bg(app.ui.theme.status_bg));
+    let info = Paragraph::new(padded).style(
+        Style::default()
+            .fg(app.ui.theme.status_fg)
+            .bg(app.ui.theme.status_bg),
+    );
     f.render_widget(info, chunks[1]);
 }
 

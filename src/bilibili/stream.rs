@@ -76,10 +76,7 @@ pub async fn get_audio_stream(
         ("try_look".to_string(), "1".to_string()), // Allow preview without login
     ];
 
-    let resp: PlayUrlResponse = client
-        .get("/x/player/wbi/playurl", params, true)
-        .await?;
-
+    let resp: PlayUrlResponse = client.get("/x/player/wbi/playurl", params, true).await?;
 
     if resp.code != 0 {
         return Err(BilibiliError::ApiResponse {
@@ -88,9 +85,9 @@ pub async fn get_audio_stream(
         });
     }
 
-    let data = resp.data.ok_or_else(|| {
-        BilibiliError::Parse("No data in play URL response".into())
-    })?;
+    let data = resp
+        .data
+        .ok_or_else(|| BilibiliError::Parse("No data in play URL response".into()))?;
 
     // Try DASH format first
     if let Some(dash) = data.dash {
@@ -121,11 +118,7 @@ pub async fn get_audio_stream(
 
         // 3. Try DASH audio (select best bitrate)
         if !dash.audio.is_empty() {
-            let best = dash
-                .audio
-                .into_iter()
-                .max_by_key(|a| a.bandwidth)
-                .unwrap();
+            let best = dash.audio.into_iter().max_by_key(|a| a.bandwidth).unwrap();
 
             if let Some(url) = pick_url(&best.base_url, &best.backup_url) {
                 let quality = AudioQuality::from_quality_id(best.id)
@@ -159,11 +152,7 @@ fn pick_url(base_url: &Option<String>, backup_url: &Option<Vec<String>>) -> Opti
         .as_ref()
         .filter(|s| !s.is_empty())
         .cloned()
-        .or_else(|| {
-            backup_url
-                .as_ref()
-                .and_then(|urls| urls.first().cloned())
-        })
+        .or_else(|| backup_url.as_ref().and_then(|urls| urls.first().cloned()))
 }
 
 #[cfg(test)]

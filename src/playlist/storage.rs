@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
 use super::Playlist;
+use crate::config::Config;
 
 /// Top-level on-disk format.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -14,8 +14,7 @@ pub struct PlaylistStore {
 
 impl PlaylistStore {
     fn storage_path() -> anyhow::Result<PathBuf> {
-        let dir = Config::config_dir()
-            .context("cannot determine config dir")?;
+        let dir = Config::config_dir().context("cannot determine config dir")?;
         Ok(dir.join("playlists.json"))
     }
 
@@ -27,8 +26,8 @@ impl PlaylistStore {
         }
         let data = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let store: Self = serde_json::from_str(&data)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let store: Self =
+            serde_json::from_str(&data).with_context(|| format!("parsing {}", path.display()))?;
         Ok(store)
     }
 
@@ -39,10 +38,8 @@ impl PlaylistStore {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("creating dir {}", dir.display()))?;
         }
-        let data = serde_json::to_string_pretty(self)
-            .context("serializing playlists")?;
-        std::fs::write(&path, data)
-            .with_context(|| format!("writing {}", path.display()))?;
+        let data = serde_json::to_string_pretty(self).context("serializing playlists")?;
+        std::fs::write(&path, data).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 }

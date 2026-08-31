@@ -40,8 +40,8 @@ impl AppState {
         }
         let data = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let state: Self = serde_json::from_str(&data)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let state: Self =
+            serde_json::from_str(&data).with_context(|| format!("parsing {}", path.display()))?;
         Ok(state)
     }
 
@@ -53,8 +53,7 @@ impl AppState {
                 .with_context(|| format!("creating dir {}", dir.display()))?;
         }
         let data = serde_json::to_string_pretty(self).context("serializing state")?;
-        std::fs::write(&path, &data)
-            .with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&path, &data).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 }
@@ -117,8 +116,8 @@ mod tests {
 
     #[test]
     fn source_field_skipped() {
-        use crate::queue::track::TrackSource;
         use crate::queue::track::AudioQuality;
+        use crate::queue::track::TrackSource;
         let mut t = track("BV1xx");
         t.source = Some(TrackSource {
             stream_url: "https://example.com/audio.m4s".to_string(),
@@ -132,7 +131,10 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         // `source` must not appear in the serialized form
-        assert!(!json.contains("stream_url"), "source should be skipped in JSON");
+        assert!(
+            !json.contains("stream_url"),
+            "source should be skipped in JSON"
+        );
         let back: AppState = serde_json::from_str(&json).unwrap();
         assert!(back.queue_tracks[0].source.is_none());
     }

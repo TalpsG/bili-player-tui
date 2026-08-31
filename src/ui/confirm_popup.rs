@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -11,12 +11,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let width = 52u16.min(screen.width);
     let height = 5u16;
 
-    let area = super::popup::popup_area(
-        screen,
-        super::popup::Anchor::Center,
-        width,
-        height,
-    );
+    let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
 
     f.render_widget(Clear, area);
 
@@ -30,7 +25,11 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     // Playlist name being deleted

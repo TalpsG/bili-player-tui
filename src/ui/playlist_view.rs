@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem};
-use ratatui::Frame;
 
 use crate::app::{App, FocusColumn};
 
@@ -20,7 +20,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default()
     };
-    items.push(ListItem::new(ratatui::text::Span::styled(queue_label, queue_style)));
+    items.push(ListItem::new(ratatui::text::Span::styled(
+        queue_label,
+        queue_style,
+    )));
 
     // Items 1..N – user playlists
     for (i, pl) in app.playlists.iter().enumerate() {

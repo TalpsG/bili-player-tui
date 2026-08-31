@@ -93,15 +93,25 @@ fn search_input_mode_keys(key: KeyEvent) -> Command {
 
 fn search_normal_mode_keys(key: KeyEvent, _search_results_len: usize) -> Command {
     match (key.modifiers, key.code) {
-        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => Command::CloseSearch,
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => {
+            Command::CloseSearch
+        }
         (KeyModifiers::NONE, KeyCode::Enter) => Command::PlaySelected,
         (KeyModifiers::NONE, KeyCode::Char('i')) => Command::EnterSearchInput,
         (KeyModifiers::NONE, KeyCode::Char('a')) => Command::EnterSearchAppend,
         (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
-        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => Command::MoveCursorLeft,
-        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => Command::MoveCursorRight,
-        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => Command::MoveCursorDown,
-        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => Command::MoveCursorUp,
+        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => {
+            Command::MoveCursorLeft
+        }
+        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => {
+            Command::MoveCursorRight
+        }
+        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
+            Command::MoveCursorDown
+        }
+        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
+            Command::MoveCursorUp
+        }
         _ => Command::Noop,
     }
 }
@@ -125,21 +135,21 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         // h/l: column navigation (ranger/yazi style)
         (KeyModifiers::NONE, KeyCode::Char('h')) => {
             match focus {
-                FocusColumn::Playlist  => Command::Noop,              // already leftmost
+                FocusColumn::Playlist => Command::Noop, // already leftmost
                 FocusColumn::TrackList => Command::FocusPlaylistColumn,
-                FocusColumn::Detail    => Command::FocusTrackListColumn,
+                FocusColumn::Detail => Command::FocusTrackListColumn,
             }
         }
         (KeyModifiers::NONE, KeyCode::Char('l')) => {
             match focus {
-                FocusColumn::Playlist  => Command::FocusTrackListColumn,
+                FocusColumn::Playlist => Command::FocusTrackListColumn,
                 FocusColumn::TrackList => Command::FocusDetailColumn,
-                FocusColumn::Detail    => Command::Noop,              // already rightmost
+                FocusColumn::Detail => Command::Noop, // already rightmost
             }
         }
 
         // ←/→ arrow keys: always seek (regardless of focus)
-        (KeyModifiers::NONE, KeyCode::Left)  => Command::SeekBackward,
+        (KeyModifiers::NONE, KeyCode::Left) => Command::SeekBackward,
         (KeyModifiers::NONE, KeyCode::Right) => Command::SeekForward,
 
         (KeyModifiers::NONE, KeyCode::Char('m')) => Command::ToggleMute,
@@ -147,58 +157,54 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         (KeyModifiers::NONE, KeyCode::Char('r')) => Command::CyclePlayMode,
 
         // Arrow keys: cursor or volume depending on focus
-        (KeyModifiers::NONE, KeyCode::Up) => {
-            match focus {
-                FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorUp,
-                FocusColumn::Detail => Command::VolumeUp,
-            }
-        }
-        (KeyModifiers::NONE, KeyCode::Down) => {
-            match focus {
-                FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorDown,
-                FocusColumn::Detail => Command::VolumeDown,
-            }
-        }
+        (KeyModifiers::NONE, KeyCode::Up) => match focus {
+            FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorUp,
+            FocusColumn::Detail => Command::VolumeUp,
+        },
+        (KeyModifiers::NONE, KeyCode::Down) => match focus {
+            FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorDown,
+            FocusColumn::Detail => Command::VolumeDown,
+        },
 
         // j/k: cursor movement when focus on list, volume when on detail
-        (KeyModifiers::NONE, KeyCode::Char('j')) => {
-            match focus {
-                FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorDown,
-                FocusColumn::Detail => Command::VolumeDown,
-            }
-        }
-        (KeyModifiers::NONE, KeyCode::Char('k')) => {
-            match focus {
-                FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorUp,
-                FocusColumn::Detail => Command::VolumeUp,
-            }
-        }
+        (KeyModifiers::NONE, KeyCode::Char('j')) => match focus {
+            FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorDown,
+            FocusColumn::Detail => Command::VolumeDown,
+        },
+        (KeyModifiers::NONE, KeyCode::Char('k')) => match focus {
+            FocusColumn::Playlist | FocusColumn::TrackList => Command::MoveCursorUp,
+            FocusColumn::Detail => Command::VolumeUp,
+        },
 
         // Page navigation
-        (KeyModifiers::SHIFT, KeyCode::Char('J')) | (KeyModifiers::NONE, KeyCode::PageDown) => Command::MoveCursorPageDown,
-        (KeyModifiers::SHIFT, KeyCode::Char('K')) | (KeyModifiers::NONE, KeyCode::PageUp) => Command::MoveCursorPageUp,
-        (KeyModifiers::NONE, KeyCode::Char('g')) | (KeyModifiers::NONE, KeyCode::Home) => Command::MoveCursorTop,
-        (KeyModifiers::SHIFT, KeyCode::Char('G')) | (KeyModifiers::NONE, KeyCode::End) => Command::MoveCursorBottom,
+        (KeyModifiers::SHIFT, KeyCode::Char('J')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
+            Command::MoveCursorPageDown
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('K')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+            Command::MoveCursorPageUp
+        }
+        (KeyModifiers::NONE, KeyCode::Char('g')) | (KeyModifiers::NONE, KeyCode::Home) => {
+            Command::MoveCursorTop
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('G')) | (KeyModifiers::NONE, KeyCode::End) => {
+            Command::MoveCursorBottom
+        }
 
         // Actions
-        (KeyModifiers::NONE, KeyCode::Enter) => {
-            match focus {
-                FocusColumn::Playlist => Command::FocusTrackListColumn,
-                _ => Command::PlaySelected,
-            }
-        }
+        (KeyModifiers::NONE, KeyCode::Enter) => match focus {
+            FocusColumn::Playlist => Command::FocusTrackListColumn,
+            _ => Command::PlaySelected,
+        },
         (KeyModifiers::NONE, KeyCode::Char('a')) => Command::AddToQueue,
         (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
-        (KeyModifiers::NONE, KeyCode::Char('c')) => {
-            match focus {
-                FocusColumn::Playlist => Command::CreatePlaylist,
-                _ => Command::Noop,
-            }
-        }
+        (KeyModifiers::NONE, KeyCode::Char('c')) => match focus {
+            FocusColumn::Playlist => Command::CreatePlaylist,
+            _ => Command::Noop,
+        },
         (KeyModifiers::NONE, KeyCode::Char('d')) => {
             match focus {
                 FocusColumn::Playlist => Command::DeletePlaylist,
-                FocusColumn::TrackList => Command::RemoveFromQueue,  // handled contextually in app (queue vs playlist)
+                FocusColumn::TrackList => Command::RemoveFromQueue, // handled contextually in app (queue vs playlist)
                 FocusColumn::Detail => Command::Noop,
             }
         }

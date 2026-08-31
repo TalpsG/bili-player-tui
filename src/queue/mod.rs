@@ -9,10 +9,10 @@ use track::Track;
 #[serde(rename_all = "snake_case")]
 pub enum PlayMode {
     #[default]
-    Sequential,  // play in order, stop at end
-    RepeatList,  // loop back to first track at end
-    RepeatOne,   // replay current track on end
-    Shuffle,     // play shuffle_order, re-shuffle when exhausted
+    Sequential, // play in order, stop at end
+    RepeatList, // loop back to first track at end
+    RepeatOne,  // replay current track on end
+    Shuffle,    // play shuffle_order, re-shuffle when exhausted
 }
 
 impl PlayMode {
@@ -21,8 +21,8 @@ impl PlayMode {
         match self {
             Self::Sequential => Self::RepeatList,
             Self::RepeatList => Self::RepeatOne,
-            Self::RepeatOne  => Self::Shuffle,
-            Self::Shuffle    => Self::Sequential,
+            Self::RepeatOne => Self::Shuffle,
+            Self::Shuffle => Self::Sequential,
         }
     }
 
@@ -31,8 +31,8 @@ impl PlayMode {
         match self {
             Self::Sequential => "",
             Self::RepeatList => "🔁",
-            Self::RepeatOne  => "🔂",
-            Self::Shuffle    => "🔀",
+            Self::RepeatOne => "🔂",
+            Self::Shuffle => "🔀",
         }
     }
 }
@@ -84,9 +84,7 @@ impl Queue {
             self.current_index = Some(0);
         }
         // In shuffle mode, append new index after current shuffle position
-        if self.play_mode == PlayMode::Shuffle
-            && self.shuffle_order.len() < self.tracks.len()
-        {
+        if self.play_mode == PlayMode::Shuffle && self.shuffle_order.len() < self.tracks.len() {
             // Insert new index right after current shuffle_pos
             let insert_at = (self.shuffle_pos + 1).min(self.shuffle_order.len());
             self.shuffle_order.insert(insert_at, new_idx);
@@ -431,7 +429,13 @@ mod tests {
         q.jump_to(0); // current = A
 
         q.insert_next(test_track("B")); // insert after A
-        assert_eq!(q.tracks().iter().map(|t| t.title.clone()).collect::<Vec<_>>(), vec!["A", "B", "C"]);
+        assert_eq!(
+            q.tracks()
+                .iter()
+                .map(|t| t.title.clone())
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
         assert_eq!(q.current_index(), Some(0));
     }
 
@@ -522,8 +526,11 @@ mod tests {
         // 4 steps — so seen.len() can be < 5 without any bug.
         let mut order = q.shuffle_order.clone();
         order.sort_unstable();
-        assert_eq!(order, vec![0, 1, 2, 3, 4],
-            "shuffle_order must contain each track index exactly once");
+        assert_eq!(
+            order,
+            vec![0, 1, 2, 3, 4],
+            "shuffle_order must contain each track index exactly once"
+        );
     }
 
     // ─── RepeatList ───────────────────────────────────────────────────────────
@@ -628,8 +635,10 @@ mod tests {
         q.cycle_play_mode(); // -> Shuffle
 
         let next = q.advance().unwrap();
-        assert_ne!(next.title, "B",
-            "First advance() after entering Shuffle must not repeat the entry track");
+        assert_ne!(
+            next.title, "B",
+            "First advance() after entering Shuffle must not repeat the entry track"
+        );
     }
 
     #[test]
@@ -646,14 +655,23 @@ mod tests {
         for _ in 0..10 {
             q.prev();
         }
-        assert_eq!(q.shuffle_pos, 0, "After many prev() calls shuffle_pos must be 0");
+        assert_eq!(
+            q.shuffle_pos, 0,
+            "After many prev() calls shuffle_pos must be 0"
+        );
 
         let floor_title = q.current_track().unwrap().title.clone();
         q.prev();
         q.prev();
-        assert_eq!(q.shuffle_pos, 0, "shuffle_pos must stay at 0 — no underflow");
-        assert_eq!(q.current_track().unwrap().title, floor_title,
-            "Track must remain the same when already at shuffle_pos 0");
+        assert_eq!(
+            q.shuffle_pos, 0,
+            "shuffle_pos must stay at 0 — no underflow"
+        );
+        assert_eq!(
+            q.current_track().unwrap().title,
+            floor_title,
+            "Track must remain the same when already at shuffle_pos 0"
+        );
     }
 
     #[test]
@@ -673,13 +691,17 @@ mod tests {
         let before_title = q.current_track().unwrap().title.clone();
         // shuffle_pos = p >= 1, so prev() moves to p-1
         let prev_title = q.prev().unwrap().title.clone();
-        assert_ne!(prev_title, before_title,
-            "prev() should move to a different track (p-1 ≠ p in a permutation)");
+        assert_ne!(
+            prev_title, before_title,
+            "prev() should move to a different track (p-1 ≠ p in a permutation)"
+        );
 
         // advance() from p-1 goes back to p — no reshuffle because p < len
         let fwd_title = q.advance().unwrap().title.clone();
-        assert_eq!(fwd_title, before_title,
-            "advance() after prev() must return to the original shuffle position");
+        assert_eq!(
+            fwd_title, before_title,
+            "advance() after prev() must return to the original shuffle position"
+        );
     }
 
     #[test]
@@ -698,15 +720,21 @@ mod tests {
         let n = q.len();
         for step in 0..(n * 2) {
             let t = q.advance();
-            assert!(t.is_some(), "advance() must always return a track in Shuffle (step {step})");
+            assert!(
+                t.is_some(),
+                "advance() must always return a track in Shuffle (step {step})"
+            );
             let idx = q.current_index().unwrap();
             assert!(idx < n, "current_index {idx} must be < {n}");
 
             // Invariant: shuffle_order is always a valid permutation
             let mut order = q.shuffle_order.clone();
             order.sort_unstable();
-            assert_eq!(order, (0..n).collect::<Vec<_>>(),
-                "shuffle_order must be a permutation of 0..n after step {step}");
+            assert_eq!(
+                order,
+                (0..n).collect::<Vec<_>>(),
+                "shuffle_order must be a permutation of 0..n after step {step}"
+            );
         }
     }
 
@@ -724,12 +752,17 @@ mod tests {
         let old_shuffle_len = q.shuffle_order.len();
         q.push(test_track("D")); // new index = 3
         assert_eq!(q.tracks.len(), old_shuffle_len + 1);
-        assert_eq!(q.shuffle_order.len(), q.tracks.len(),
-            "shuffle_order must stay in sync with tracks after push in Shuffle mode");
+        assert_eq!(
+            q.shuffle_order.len(),
+            q.tracks.len(),
+            "shuffle_order must stay in sync with tracks after push in Shuffle mode"
+        );
         // The new index must appear in shuffle_order exactly once
         let occurrences = q.shuffle_order.iter().filter(|&&i| i == 3).count();
-        assert_eq!(occurrences, 1,
-            "New track index must appear exactly once in shuffle_order");
+        assert_eq!(
+            occurrences, 1,
+            "New track index must appear exactly once in shuffle_order"
+        );
     }
 
     #[test]
@@ -746,16 +779,25 @@ mod tests {
         let q = Queue::restore(tracks, Some(1), PlayMode::Shuffle);
 
         assert_eq!(q.play_mode, PlayMode::Shuffle);
-        assert_eq!(q.shuffle_order.len(), n,
-            "restore() must pre-generate shuffle_order for Shuffle mode");
-        assert!(q.shuffle_pos < n,
-            "shuffle_pos {} must be a valid index into shuffle_order", q.shuffle_pos);
+        assert_eq!(
+            q.shuffle_order.len(),
+            n,
+            "restore() must pre-generate shuffle_order for Shuffle mode"
+        );
+        assert!(
+            q.shuffle_pos < n,
+            "shuffle_pos {} must be a valid index into shuffle_order",
+            q.shuffle_pos
+        );
 
         // shuffle_order must be a permutation of 0..n
         let mut order = q.shuffle_order.clone();
         order.sort_unstable();
-        assert_eq!(order, (0..n).collect::<Vec<_>>(),
-            "shuffle_order must be a permutation of all track indices after restore");
+        assert_eq!(
+            order,
+            (0..n).collect::<Vec<_>>(),
+            "shuffle_order must be a permutation of all track indices after restore"
+        );
     }
 
     // ─── Mode switching ───────────────────────────────────────────────────────
@@ -786,8 +828,11 @@ mod tests {
         if ci + 1 < q.len() {
             let expected_title = q.tracks()[ci + 1].title.clone();
             let nxt_title = q.advance().unwrap().title.clone();
-            assert_eq!(q.current_index(), Some(ci + 1),
-                "Sequential advance must increment current_index by 1");
+            assert_eq!(
+                q.current_index(),
+                Some(ci + 1),
+                "Sequential advance must increment current_index by 1"
+            );
             assert_eq!(nxt_title, expected_title);
         } else {
             // At the last track — Sequential advance stops
@@ -817,20 +862,28 @@ mod tests {
         q.cycle_play_mode(); // Shuffle -> Sequential
 
         // current_index must be preserved across the mode switch
-        assert_eq!(q.current_index(), Some(idx_after_shuffle),
-            "Switching modes must not change current_index");
+        assert_eq!(
+            q.current_index(),
+            Some(idx_after_shuffle),
+            "Switching modes must not change current_index"
+        );
 
         // Sequential advance now moves forward by exactly 1
         let n = q.len();
         if idx_after_shuffle + 1 < n {
             let nxt = q.advance();
             assert!(nxt.is_some());
-            assert_eq!(q.current_index(), Some(idx_after_shuffle + 1),
-                "Sequential advance after shuffle must increment current_index by 1");
+            assert_eq!(
+                q.current_index(),
+                Some(idx_after_shuffle + 1),
+                "Sequential advance after shuffle must increment current_index by 1"
+            );
         } else {
             // At the last track — Sequential advance returns None
-            assert!(q.advance().is_none(),
-                "Sequential advance at last track must return None");
+            assert!(
+                q.advance().is_none(),
+                "Sequential advance at last track must return None"
+            );
         }
     }
 

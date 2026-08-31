@@ -42,8 +42,8 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::config::Config;
 use self::disk_cache::DiskCache;
+use crate::config::Config;
 
 /// Number of decoded images kept in the LRU cache.
 const CACHE_CAPACITY: usize = 20;

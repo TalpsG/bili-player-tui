@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::app::{App, FocusColumn};
 use crate::cover::CoverManager;
@@ -87,7 +87,13 @@ fn draw_empty(f: &mut Frame, area: Rect) {
 
 // ── Track detail ─────────────────────────────────────────────────────────────
 
-fn draw_track(f: &mut Frame, area: Rect, track: &Track, cover_manager: &mut Option<CoverManager>, cover_suppressed: bool) {
+fn draw_track(
+    f: &mut Frame,
+    area: Rect,
+    track: &Track,
+    cover_manager: &mut Option<CoverManager>,
+    cover_suppressed: bool,
+) {
     // Text lines: title + author + meta + bvid = 4 (no blank line).
     const TEXT_LINES: u16 = 4;
 
@@ -214,11 +220,7 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
     // Duration (always present) — append quality only once source is resolved
     let dur = super::format_duration(Some(track.duration));
     let meta = match &track.source {
-        Some(src) => format!(
-            "⏱  {}  ·  🎵 {}",
-            dur,
-            format_quality(&src.audio_quality)
-        ),
+        Some(src) => format!("⏱  {}  ·  🎵 {}", dur, format_quality(&src.audio_quality)),
         None => format!("⏱  {}", dur),
     };
     lines.push(Line::from(Span::styled(

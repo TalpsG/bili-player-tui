@@ -11,10 +11,7 @@ use crate::queue::track::TrackSource;
 
 /// Commands sent from the main thread to the mpv event thread.
 enum MpvCommand {
-    LoadFile {
-        url: String,
-        referer: String,
-    },
+    LoadFile { url: String, referer: String },
     Pause,
     Resume,
     Stop,

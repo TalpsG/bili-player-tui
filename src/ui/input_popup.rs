@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -13,12 +13,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let width = 50u16.min(screen.width);
     let height = 5u16;
 
-    let area = super::popup::popup_area(
-        screen,
-        super::popup::Anchor::Center,
-        width,
-        height,
-    );
+    let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
 
     // Clear the background
     f.render_widget(Clear, area);
@@ -41,7 +36,12 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let input = &app.playlist_name_input;
     let input_line = Line::from(vec![
         Span::raw(" "),
-        Span::styled(input.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            input.as_str(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("█", Style::default().fg(Color::White)),
     ]);
     f.render_widget(Paragraph::new(input_line), rows[0]);

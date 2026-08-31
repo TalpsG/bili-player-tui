@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Clear, Gauge};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -8,12 +8,8 @@ use crate::app::App;
 pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let width = 30u16.min(screen.width.saturating_sub(4));
     let height = 3;
-    let area = super::popup::popup_area(
-        screen,
-        super::popup::Anchor::AboveStatusBar,
-        width,
-        height,
-    );
+    let area =
+        super::popup::popup_area(screen, super::popup::Anchor::AboveStatusBar, width, height);
 
     let label = if app.muted {
         format!("MUTED ({}%)", app.volume)

@@ -107,9 +107,9 @@ pub async fn fetch_wbi_keys(
         .map_err(|e| BilibiliError::Wbi(format!("Failed to parse nav response: {e}")))?;
 
     // WBI keys are available even when code != 0 (e.g. not logged in)
-    let data = nav.data.ok_or_else(|| {
-        BilibiliError::Wbi("No data in nav response, cannot get WBI keys".into())
-    })?;
+    let data = nav
+        .data
+        .ok_or_else(|| BilibiliError::Wbi("No data in nav response, cannot get WBI keys".into()))?;
 
     if data.wbi_img.img_url.is_empty() || data.wbi_img.sub_url.is_empty() {
         return Err(BilibiliError::Wbi("WBI image URLs are empty".into()));
@@ -120,7 +120,9 @@ pub async fn fetch_wbi_keys(
     let sub_key = extract_key_from_url(&data.wbi_img.sub_url);
 
     if img_key.is_empty() || sub_key.is_empty() {
-        return Err(BilibiliError::Wbi("Failed to extract WBI keys from URLs".into()));
+        return Err(BilibiliError::Wbi(
+            "Failed to extract WBI keys from URLs".into(),
+        ));
     }
 
     Ok((img_key, sub_key))

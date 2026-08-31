@@ -2,9 +2,9 @@ use md5::{Digest, Md5};
 
 /// The 64-element permutation table for WBI mixin key derivation.
 const MIXIN_KEY_ENC_TAB: [usize; 64] = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
-    19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51,
-    30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
+    28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
+    54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
 /// Derive the 32-character mixin key from img_key and sub_key.
@@ -29,10 +29,7 @@ pub fn get_mixin_key(img_key: &str, sub_key: &str) -> String {
 /// 4. URL-encode values
 /// 5. Compute MD5(query_string + mixin_key) = w_rid
 /// 6. Append w_rid and wts to parameters
-pub fn sign_wbi_params(
-    params: &mut Vec<(String, String)>,
-    mixin_key: &str,
-) {
+pub fn sign_wbi_params(params: &mut Vec<(String, String)>, mixin_key: &str) {
     // Add timestamp
     let wts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -122,7 +119,10 @@ mod tests {
         let result = get_mixin_key("short", "key");
         assert_eq!(result.len(), 32);
 
-        let result = get_mixin_key("a_very_long_key_that_exceeds_64_chars_aaa", "another_very_long_key_bbb");
+        let result = get_mixin_key(
+            "a_very_long_key_that_exceeds_64_chars_aaa",
+            "another_very_long_key_bbb",
+        );
         assert_eq!(result.len(), 32);
     }
 
@@ -171,9 +171,7 @@ mod tests {
     #[test]
     fn test_sign_wbi_filters_special_chars() {
         let mixin_key = "0123456789abcdef0123456789abcdef";
-        let mut params = vec![
-            ("test".to_string(), "hello!'(world)*".to_string()),
-        ];
+        let mut params = vec![("test".to_string(), "hello!'(world)*".to_string())];
 
         sign_wbi_params(&mut params, mixin_key);
 
@@ -195,8 +193,16 @@ mod tests {
         params1.sort_by(|a, b| a.0.cmp(&b.0));
         params2.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let query1: String = params1.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
-        let query2: String = params2.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
+        let query1: String = params1
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let query2: String = params2
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
 
         let mut hasher1 = Md5::new();
         hasher1.update(query1.as_bytes());

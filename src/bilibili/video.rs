@@ -44,10 +44,7 @@ struct VideoPage {
 
 /// Get video information by BV number.
 /// Returns a Track with cid resolved (first page, or specified page).
-pub async fn get_video_info(
-    client: &BilibiliClient,
-    bvid: &str,
-) -> Result<Track, BilibiliError> {
+pub async fn get_video_info(client: &BilibiliClient, bvid: &str) -> Result<Track, BilibiliError> {
     let params = vec![("bvid".to_string(), bvid.to_string())];
 
     let resp: VideoInfoResponse = client
@@ -61,9 +58,9 @@ pub async fn get_video_info(
         });
     }
 
-    let data = resp.data.ok_or_else(|| {
-        BilibiliError::Parse("No data in video info response".into())
-    })?;
+    let data = resp
+        .data
+        .ok_or_else(|| BilibiliError::Parse("No data in video info response".into()))?;
 
     // Use first page's cid
     let cid = data
@@ -100,12 +97,10 @@ pub async fn get_video_pages(
     struct PageItem {
         cid: u64,
         #[allow(dead_code)]
-    part: String,
+        part: String,
     }
 
-    let resp: PagelistResponse = client
-        .get("/x/player/pagelist", params, false)
-        .await?;
+    let resp: PagelistResponse = client.get("/x/player/pagelist", params, false).await?;
 
     if resp.code != 0 {
         return Err(BilibiliError::ApiResponse {

@@ -26,10 +26,5 @@ pub fn popup_area(screen: Rect, anchor: Anchor, width: u16, height: u16) -> Rect
         Anchor::FullScreen => (0, 0),
     };
 
-    Rect::new(
-        x,
-        y,
-        width.min(screen.width),
-        height.min(screen.height),
-    )
+    Rect::new(x, y, width.min(screen.width), height.min(screen.height))
 }

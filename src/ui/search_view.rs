@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::app::{App, InputMode};
 
@@ -30,7 +30,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     // Draw input box
     let input_text = format!("/{}", app.search_query);
     let input_title = format!("Search{}", mode_str);
-    
+
     let input_border_style = if app.search_focus_input {
         app.ui.theme.focused_border
     } else {
@@ -63,7 +63,9 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             let style = if is_selected && !app.search_focus_input {
                 app.ui.theme.focused_item.add_modifier(Modifier::BOLD)
             } else if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED)
             } else {
                 Style::default()
             };
@@ -92,15 +94,20 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     // Set cursor position
     if app.search_focus_input {
         // Use unicode-width for CJK characters
-        let query_prefix: String = app.search_query.chars().take(app.search_query_cursor).collect();
-        let query_width: usize = query_prefix.chars()
+        let query_prefix: String = app
+            .search_query
+            .chars()
+            .take(app.search_query_cursor)
+            .collect();
+        let query_width: usize = query_prefix
+            .chars()
             .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
             .sum();
-        
+
         let cursor_x = chunks[0].x + 1 + 1 + query_width as u16;
         let cursor_y = chunks[0].y + 1;
-        
-        // In Normal mode on input, we might want a different cursor look, 
+
+        // In Normal mode on input, we might want a different cursor look,
         // but terminal cursor is usually a block or line.
         f.set_cursor_position((cursor_x, cursor_y));
     }

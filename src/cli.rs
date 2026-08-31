@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "bili-player-cli", version, about = "Bilibili audio player in your terminal")]
+#[command(
+    name = "bili-player-cli",
+    version,
+    about = "Bilibili audio player in your terminal"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

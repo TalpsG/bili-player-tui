@@ -1,4 +1,4 @@
-use ratatui::{backend::TestBackend, Terminal, buffer::Buffer};
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use std::time::Duration;
 
 use crate::app::{App, InputMode, PopupLayer};
@@ -25,7 +25,7 @@ fn buffer_contains(buffer: &Buffer, pattern: &str) -> bool {
         // Also clean the pattern for comparison
         let clean_pattern: String = pattern.chars().filter(|&c| c != ' ').collect();
         let clean_line: String = line.chars().filter(|&c| c != ' ').collect();
-        
+
         if clean_line.contains(&clean_pattern) {
             return true;
         }
@@ -55,10 +55,10 @@ fn test_header_rendering() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
     app.logged_in = true;
-    
+
     terminal.draw(|f| app.draw(f)).unwrap();
     let buffer = terminal.backend().buffer();
-    
+
     assert!(buffer_contains(buffer, "bili-player-cli"));
     assert!(buffer_contains(buffer, "已登录"));
 }
@@ -68,11 +68,11 @@ fn test_responsive_layout() {
     // 3 columns
     let visibility = crate::ui::layout::ColumnVisibility::from_width(100);
     assert!(visibility.playlist && visibility.track_list && visibility.detail);
-    
+
     // 2 columns
     let visibility = crate::ui::layout::ColumnVisibility::from_width(60);
     assert!(visibility.playlist && visibility.track_list && !visibility.detail);
-    
+
     // 1 column
     let visibility = crate::ui::layout::ColumnVisibility::from_width(40);
     assert!(!visibility.playlist && visibility.track_list && !visibility.detail);
@@ -82,12 +82,12 @@ fn test_responsive_layout() {
 fn test_search_popup_modes() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
-    
+
     app.input_mode = InputMode::SearchInput;
     app.show_popup(PopupLayer::Search);
     terminal.draw(|f| app.draw(f)).unwrap();
     assert!(buffer_contains(terminal.backend().buffer(), "INSERT"));
-    
+
     app.input_mode = InputMode::SearchNormal;
     terminal.draw(|f| app.draw(f)).unwrap();
     assert!(buffer_contains(terminal.backend().buffer(), "NORMAL"));
@@ -97,10 +97,10 @@ fn test_search_popup_modes() {
 fn test_volume_popup_visibility() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
-    
+
     app.show_popup(PopupLayer::VolumeSlider);
     app.volume = 50;
-    
+
     terminal.draw(|f| app.draw(f)).unwrap();
     assert!(buffer_contains(terminal.backend().buffer(), "Volume: 50%"));
 }
@@ -109,10 +109,10 @@ fn test_volume_popup_visibility() {
 fn test_help_popup_rendering() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
-    
+
     app.show_popup(PopupLayer::Help);
     terminal.draw(|f| app.draw(f)).unwrap();
-    
+
     assert!(buffer_contains(terminal.backend().buffer(), "快捷键参考"));
     assert!(buffer_contains(terminal.backend().buffer(), "退出程序"));
 }
@@ -121,13 +121,13 @@ fn test_help_popup_rendering() {
 fn test_clear_widget_prevents_bleed() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
-    
+
     // Background text
     app.queue.push(dummy_track("HIDDEN_TEXT"));
     app.show_popup(PopupLayer::Help);
-    
+
     terminal.draw(|f| app.draw(f)).unwrap();
-    
+
     // HIDDEN_TEXT should be covered by help popup and Clear widget
     // Note: It might still exist in areas NOT covered by the popup,
     // so we check if it is NOT present in any line that also contains the popup title
@@ -146,12 +146,13 @@ fn test_clear_widget_prevents_bleed() {
 fn test_playlist_list_shows_queue_and_playlists() {
     let mut terminal = setup_test_terminal(80, 24);
     let mut app = test_app();
-    app.playlists.push(crate::playlist::Playlist::new("My Faves"));
+    app.playlists
+        .push(crate::playlist::Playlist::new("My Faves"));
     terminal.draw(|f| app.draw(f)).unwrap();
     let buffer = terminal.backend().buffer();
     assert!(buffer_contains(buffer, "Playlists"));
     assert!(buffer_contains(buffer, "Queue"));
-    assert!(buffer_contains(buffer, "MyFaves"));  // spaces stripped by buffer_contains helper
+    assert!(buffer_contains(buffer, "MyFaves")); // spaces stripped by buffer_contains helper
 }
 
 #[test]

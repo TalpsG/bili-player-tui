@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::app::App;
 
@@ -15,12 +15,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     let height = list_height + 4; // border top + title + footer + border bottom
     let width = 50u16.min(screen.width);
 
-    let area = super::popup::popup_area(
-        screen,
-        super::popup::Anchor::Center,
-        width,
-        height,
-    );
+    let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
 
     f.render_widget(Clear, area);
 
@@ -73,7 +68,12 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     // "Adding: <title>" label
     let label = Line::from(vec![
         Span::styled(" Adding: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(track_title, Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)),
+        Span::styled(
+            track_title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::ITALIC),
+        ),
     ]);
     let _ = list_area; // suppress unused warning
     f.render_widget(ratatui::widgets::Paragraph::new(label), label_area);

@@ -74,7 +74,10 @@ impl BilibiliClient {
         request = request.header("Referer", REFERER);
 
         // Spoof User-Agent to bypass anti-bot checks on playurl API
-        request = request.header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
+        request = request.header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        );
 
         let resp = request
             .send()
