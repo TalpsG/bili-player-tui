@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::error::AudioError;
-use crate::event::PlayerEvent;
+use crate::event::{EndReason, PlayerEvent};
 use crate::queue::track::TrackSource;
 
 /// Commands sent from the main thread to the mpv event thread.
@@ -214,7 +214,9 @@ fn mpv_event_loop(
         // Wait for mpv event (short timeout to keep command processing responsive)
         match mpv.wait_event(0.1) {
             Some(Ok(libmpv2::events::Event::EndFile(reason))) => {
-                let _ = event_tx.send(PlayerEvent::TrackEnded { reason });
+                let _ = event_tx.send(PlayerEvent::TrackEnded {
+                    reason: EndReason::from(reason),
+                });
             }
             Some(Ok(libmpv2::events::Event::PlaybackRestart)) => {
                 let _ = event_tx.send(PlayerEvent::SeekCompleted);

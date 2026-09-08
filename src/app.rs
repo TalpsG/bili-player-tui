@@ -16,7 +16,9 @@ use crate::bilibili::video::{VideoPage, get_video_info, get_video_pages};
 use crate::command::Command;
 use crate::config::Config;
 use crate::cover::CoverManager;
-use crate::event::PlayerEvent;
+use tracing::debug;
+
+use crate::event::{EndReason, PlayerEvent};
 use crate::player::mpv::MpvBackend;
 use crate::playlist::Playlist;
 use crate::playlist::storage::PlaylistStore;
@@ -1208,19 +1210,28 @@ impl App {
 
     fn handle_player_event(&mut self, event: PlayerEvent) {
         match event {
-            PlayerEvent::TrackEnded { reason } => {
-                if reason == 0 {
+            PlayerEvent::TrackEnded { reason } => match reason {
+                EndReason::Eof => {
                     if let Some(track) = self.queue.advance() {
                         let track = track.clone();
                         self.play_track(track);
                     } else {
                         self.is_playing = false;
                     }
-                } else {
-                    self.set_status(format!("Playback error (reason: {reason})"));
+                }
+                // Replacing the file is how a new track starts, and mpv reports
+                // the outgoing one as STOP.  Only ERROR is a real failure -- the
+                // rest must leave `is_playing` alone, or the UI shows "stopped"
+                // over audio that is in fact playing.
+                EndReason::Stop | EndReason::Quit | EndReason::Redirect => {}
+                EndReason::Unknown(other) => {
+                    debug!("ignoring unknown mpv end-file reason {other}");
+                }
+                EndReason::Error => {
+                    self.set_status("Playback error: mpv could not play this stream".to_string());
                     self.is_playing = false;
                 }
-            }
+            },
             PlayerEvent::SeekCompleted => {}
             PlayerEvent::Shutdown => {
                 self.should_quit = true;
@@ -2231,6 +2242,39 @@ mod tests {
         assert_eq!(app.queue.len(), 3, "a video row queues all of its parts");
         let pages: Vec<u32> = app.queue.tracks().iter().filter_map(|t| t.page).collect();
         assert_eq!(pages, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn stop_end_reason_is_not_a_playback_error() {
+        // Regression: mpv reports the outgoing file as STOP (2) whenever we
+        // load another one, so switching tracks used to print
+        // "Playback error (reason: 2)" and blank out `is_playing`.
+        let mut app = test_app();
+        app.queue.push(track("BV1"));
+        app.queue.jump_to(0);
+        app.is_playing = true;
+
+        app.handle_player_event(PlayerEvent::TrackEnded {
+            reason: EndReason::Stop,
+        });
+
+        assert!(app.is_playing, "replacing the file is not a failure");
+        assert_eq!(app.status_message, None, "no bogus error in the status bar");
+    }
+
+    #[test]
+    fn error_end_reason_stops_playback() {
+        let mut app = test_app();
+        app.queue.push(track("BV1"));
+        app.queue.jump_to(0);
+        app.is_playing = true;
+
+        app.handle_player_event(PlayerEvent::TrackEnded {
+            reason: EndReason::Error,
+        });
+
+        assert!(!app.is_playing, "a real playback error stops the UI");
+        assert!(app.status_message.is_some());
     }
 
     #[tokio::test]
