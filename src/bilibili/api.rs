@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 
@@ -19,8 +21,15 @@ pub struct BilibiliClient {
 
 impl BilibiliClient {
     pub fn new(sessdata: Option<String>) -> Self {
+        // reqwest hangs forever by default.  B 站 stalls requests when it
+        // throttles, and a stalled call is indistinguishable from one still in
+        // progress: a stuck `playurl` left `pending_stream` pending forever (no
+        // playback, no error), and a stuck `pagelist` left its bvid in
+        // `pages_loading`, which made it un-expandable for good.
         let http = Client::builder()
             .cookie_store(false)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(20))
             .build()
             .expect("Failed to build HTTP client");
 

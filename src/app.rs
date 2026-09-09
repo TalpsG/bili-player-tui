@@ -1084,6 +1084,7 @@ impl App {
         if let Some((track, mut rx)) = self.pending_stream.take() {
             match rx.try_recv() {
                 Ok(Ok(source)) => {
+                    let title = track.display_title().to_string();
                     if let Err(e) = self.player.play(&source) {
                         self.set_status(format!("Playback error: {e}"));
                     } else {
@@ -1091,14 +1092,24 @@ impl App {
                         if let Some(current) = self.queue.current_track_mut() {
                             current.source = Some(source);
                         }
+                        // Starting playback used to be silent, so a track that
+                        // never played was indistinguishable from one that did.
+                        self.set_status(format!("Playing: {title}"));
                     }
                     self.is_playing = true;
                 }
                 Ok(Err(e)) => {
                     self.set_status(format!("Failed to get audio: {e}"));
                 }
-                Err(_) => {
+                Err(mpsc::error::TryRecvError::Empty) => {
                     self.pending_stream = Some((track, rx));
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // The resolving task ended without ever sending.  Putting
+                    // the entry back would retry it forever, so the track would
+                    // silently never play.
+                    let title = track.display_title().to_string();
+                    self.set_status(format!("Failed to get audio: no response for {title}"));
                 }
             }
         }
