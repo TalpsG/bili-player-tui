@@ -82,17 +82,17 @@ fn test_header_rendering() {
     let buffer = terminal.backend().buffer();
 
     assert!(buffer_contains(buffer, "bili-player-cli"));
-    assert!(buffer_contains(buffer, "已登录"));
+    assert!(buffer_contains(buffer, "Loggedin"));
 }
 
 #[test]
 fn test_responsive_layout() {
     // 3 columns
-    let visibility = crate::ui::layout::ColumnVisibility::from_width(100);
+    let visibility = crate::ui::layout::ColumnVisibility::from_width(120);
     assert!(visibility.playlist && visibility.track_list && visibility.detail);
 
     // 2 columns
-    let visibility = crate::ui::layout::ColumnVisibility::from_width(60);
+    let visibility = crate::ui::layout::ColumnVisibility::from_width(80);
     assert!(visibility.playlist && visibility.track_list && !visibility.detail);
 
     // 1 column
@@ -135,8 +135,11 @@ fn test_help_popup_rendering() {
     app.show_popup(PopupLayer::Help);
     terminal.draw(|f| app.draw(f)).unwrap();
 
-    assert!(buffer_contains(terminal.backend().buffer(), "快捷键参考"));
-    assert!(buffer_contains(terminal.backend().buffer(), "退出程序"));
+    assert!(buffer_contains(terminal.backend().buffer(), "Help"));
+    assert!(buffer_contains(
+        terminal.backend().buffer(),
+        "main-screen q quits"
+    ));
 }
 
 #[test]
@@ -158,7 +161,7 @@ fn test_clear_widget_prevents_bleed() {
         let line: String = (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
             .collect();
-        if line.contains("快捷键参考") {
+        if line.contains("Help") {
             assert!(!line.contains("HIDDEN_TEXT"));
         }
     }
@@ -360,4 +363,158 @@ fn test_queued_part_rows_show_part_names() {
         part_col >= video_col + 4,
         "queued parts indent like any other part row (part {part_col}, video {video_col})"
     );
+}
+
+#[test]
+fn constrained_columns_prioritize_tracks_and_respect_sidebar_bounds() {
+    use crate::ui::layout::{ColumnVisibility, body_columns};
+    use ratatui::layout::Rect;
+    for width in [110, 120, 150, 180, 300] {
+        let body = Rect::new(3, 4, width, 22);
+        let (playlist, tracks, detail) = body_columns(body, ColumnVisibility::from_size(width, 24));
+        assert!((18..=26).contains(&playlist.width));
+        assert!((28..=40).contains(&detail.width));
+        assert!(tracks.width >= 56);
+        assert_eq!(playlist.width + tracks.width + detail.width, width);
+        assert_eq!(playlist.x, body.x);
+        assert_eq!(detail.right(), body.right());
+    }
+    for (width, height, playlist, detail) in [
+        (71, 24, false, false),
+        (72, 24, true, false),
+        (109, 24, true, false),
+        (110, 18, true, true),
+        (110, 17, true, false),
+        (200, 1, true, false),
+    ] {
+        let visibility = ColumnVisibility::from_size(width, height);
+        assert_eq!((visibility.playlist, visibility.detail), (playlist, detail));
+    }
+}
+
+#[test]
+fn shrinking_terminal_repairs_hidden_focus_and_fullscreen_preserves_lists() {
+    use crate::app::FocusColumn;
+    let mut terminal = setup_test_terminal(120, 24);
+    let mut app = test_app();
+    app.queue.push(dummy_track("Selected"));
+    app.focus_column = FocusColumn::Detail;
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.focus_column, FocusColumn::Detail);
+    app.detail_fullscreen_return_focus = Some(FocusColumn::Detail);
+    app.ui.track_list_cursor = 0;
+    app.ui.track_list_scroll = 7;
+    terminal.backend_mut().resize(60, 10);
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.focus_column, FocusColumn::Detail);
+    assert_eq!(app.ui.track_list_scroll, 7);
+    app.detail_fullscreen_return_focus = None;
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.focus_column, FocusColumn::TrackList);
+}
+
+#[test]
+fn responsive_views_render_at_small_and_degenerate_sizes() {
+    for (width, height) in [
+        (180, 40),
+        (110, 18),
+        (100, 17),
+        (72, 10),
+        (40, 8),
+        (4, 3),
+        (1, 1),
+        (0, 0),
+    ] {
+        let mut terminal = setup_test_terminal(width, height);
+        let mut app = test_app();
+        app.queue.push(dummy_track("自适应布局 / long title"));
+        for fullscreen in [false, true] {
+            app.detail_fullscreen_return_focus =
+                fullscreen.then_some(crate::app::FocusColumn::TrackList);
+            terminal.draw(|f| app.draw(f)).unwrap();
+            for popup in [
+                PopupLayer::Search,
+                PopupLayer::Help,
+                PopupLayer::PlaylistCreate,
+                PopupLayer::PlaylistDeleteConfirm,
+                PopupLayer::AddToPlaylist,
+                PopupLayer::VolumeSlider,
+            ] {
+                app.popup_stack = vec![popup];
+                if popup == PopupLayer::Search {
+                    app.input_mode = InputMode::SearchInput;
+                }
+                terminal.draw(|f| app.draw(f)).unwrap();
+                app.popup_stack.clear();
+                app.input_mode = InputMode::Normal;
+            }
+        }
+    }
+}
+
+#[test]
+fn all_play_mode_icons_are_visible_in_status_bar() {
+    let mut app = App::new_with_playlists(Config::default(), None, Vec::new()).unwrap();
+    let mut terminal = setup_test_terminal(80, 24);
+    for mode in [
+        crate::queue::PlayMode::Sequential,
+        crate::queue::PlayMode::RepeatList,
+        crate::queue::PlayMode::RepeatOne,
+        crate::queue::PlayMode::Shuffle,
+    ] {
+        app.queue.play_mode = mode;
+        terminal
+            .draw(|f| crate::ui::draw_status_bar(f, &app, ratatui::layout::Rect::new(0, 23, 80, 1)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer_contains(buffer, mode.icon()));
+        assert!(buffer_contains(buffer, "🔊"));
+        for name in ["Sequential", "Repeatlist", "Repeatone", "Shuffle"] {
+            assert!(!buffer_contains(buffer, name));
+        }
+    }
+}
+
+#[test]
+fn cached_single_part_legacy_leaf_renders_once_without_p1() {
+    let mut app = test_app();
+    let mut saved = dummy_track("Legacy single video");
+    saved.page = Some(1);
+    saved.part = Some("Legacy part title".into());
+    app.queue.push(saved.clone());
+    let page = crate::bilibili::video::VideoPage {
+        cid: saved.cid,
+        page: 1,
+        part: "Legacy part title".into(),
+        duration_secs: saved.duration.as_secs(),
+    };
+    app.pages_cache
+        .insert(saved.bvid.clone(), vec![page.clone()]);
+    app.expanded.insert(saved.bvid.clone());
+    assert_eq!(app.visible_rows().len(), 1);
+    let mut terminal = setup_test_terminal(120, 30);
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert!(buffer_contains(
+        terminal.backend().buffer(),
+        "Legacy single video"
+    ));
+    assert!(!buffer_contains(terminal.backend().buffer(), "P1"));
+    assert!(!buffer_contains(
+        terminal.backend().buffer(),
+        "Legacy part title"
+    ));
+    assert_eq!(app.queue.tracks()[0].page, Some(1));
+    // A real multi-part P1 keeps its group and label.
+    let mut second = page.clone();
+    second.page = 2;
+    second.cid += 1;
+    app.pages_cache
+        .insert(saved.bvid.clone(), vec![page, second]);
+    assert_eq!(app.visible_rows().len(), 2);
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert!(buffer_contains(terminal.backend().buffer(), "P1"));
+    assert!(buffer_contains(
+        terminal.backend().buffer(),
+        "Legacy part title"
+    ));
 }

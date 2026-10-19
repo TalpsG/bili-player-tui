@@ -10,7 +10,7 @@ use crate::app::App;
 ///
 /// Layout: centered box with a title, an input line, and a hint footer.
 pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
-    let width = 50u16.min(screen.width);
+    let width = 50u16;
     let height = 5u16;
 
     let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
@@ -20,7 +20,11 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" New Playlist ")
+        .title(if app.importing_favorites {
+            " Import Favorites: URL / ID "
+        } else {
+            " New Playlist "
+        })
         .border_style(app.ui.theme.popup_border);
 
     // Split into: input line (row 0) + hint line (row 1) inside the block
@@ -33,7 +37,11 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .split(inner);
 
     // Input line: show text with trailing cursor block
-    let input = &app.playlist_name_input;
+    let (input, _) = super::popup::input_window(
+        &app.playlist_name_input,
+        app.playlist_name_input.chars().count(),
+        rows[0].width.saturating_sub(1),
+    );
     let input_line = Line::from(vec![
         Span::raw(" "),
         Span::styled(

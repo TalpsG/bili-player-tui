@@ -3,6 +3,8 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Quit,
+    ToggleDetailFullscreen,
+    CloseDetailFullscreen,
     TogglePause,
     NextTrack,
     PrevTrack,
@@ -34,10 +36,16 @@ pub enum Command {
     MoveCursorLeft,
     MoveCursorRight,
     OpenHelp,
+    HelpScroll(i16),
+    HelpPage(i16),
+    HelpTop,
+    HelpBottom,
     CloseHelp,
     EnterSearchInput,
     EnterSearchAppend,
     // Playlist management
+    ImportFavorites,
+    CancelPending,
     CreatePlaylist,           // 'c' when focus=Playlist → opens input popup
     CreatePlaylistChar(char), // character typed in create-playlist popup
     CreatePlaylistBackspace,  // Backspace in create-playlist popup

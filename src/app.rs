@@ -19,11 +19,15 @@ use crate::config::Config;
 use crate::cover::CoverManager;
 use tracing::debug;
 
+use crate::bilibili::favorite::{
+    FavoriteFolderSnapshot, fetch_favorites_snapshot, parse_favorite_folder_id,
+};
 use crate::event::{EndReason, PlayerEvent};
 use crate::player::mpv::MpvBackend;
 use crate::playlist::Playlist;
 use crate::playlist::storage::PlaylistStore;
 use crate::queue::Queue;
+use crate::queue::plan::{self, ResolvedPlan};
 use crate::queue::track::Track;
 use crate::state::AppState;
 use crate::ui::Ui;
@@ -192,6 +196,9 @@ pub struct App {
     pub ui: Ui,
     pub input_mode: InputMode,
     pub focus_column: FocusColumn,
+    pub help_scroll: usize,
+    /// The focus to restore when leaving the fullscreen detail view.
+    pub detail_fullscreen_return_focus: Option<FocusColumn>,
 
     // Search state
     pub search_query: String,
@@ -251,11 +258,24 @@ pub struct App {
         mpsc::UnboundedReceiver<(String, Result<Vec<VideoPage>, crate::error::BilibiliError>)>,
     /// bvids whose part list is currently being fetched.
     pages_loading: HashSet<String>,
+    pages_retry_after: HashMap<String, std::time::Instant>,
     /// bvids whose part list is expanded in the middle column.
     pub expanded: HashSet<String>,
     /// Set when the user explicitly toggled a row whose part list was not
     /// loaded yet — expand it as soon as the request lands.
     pending_expand: Option<String>,
+    pending_enter: Option<(usize, usize, String)>,
+
+    pending_queue_plan: Option<(
+        QueueAction,
+        mpsc::UnboundedReceiver<Result<ResolvedPlan, crate::error::BilibiliError>>,
+        tokio::task::JoinHandle<()>,
+    )>,
+    pending_favorites: Option<(
+        mpsc::UnboundedReceiver<Result<FavoriteFolderSnapshot, crate::error::BilibiliError>>,
+        tokio::task::JoinHandle<()>,
+    )>,
+    pub importing_favorites: bool,
 
     // Cover image manager (None if terminal doesn't support graphics)
     pub cover_manager: Option<CoverManager>,
@@ -272,6 +292,16 @@ pub struct App {
     /// This prevents the terminal from transmitting raw pixel data (Kitty/Sixel)
     /// on every j/k keypress, which causes noticeable input lag.
     pub cover_render_after: Option<std::time::Instant>,
+}
+
+enum QueueAction {
+    Replace {
+        playlist: usize,
+        original: Vec<Track>,
+    },
+    Append {
+        play: bool,
+    },
 }
 
 /// Extract a BV ID from a raw query string.
@@ -344,6 +374,8 @@ impl App {
             ui: Ui::new(),
             input_mode: InputMode::Normal,
             focus_column: FocusColumn::TrackList,
+            help_scroll: 0,
+            detail_fullscreen_return_focus: None,
             search_query: String::new(),
             search_query_cursor: 0,
             search_results: Vec::new(),
@@ -369,8 +401,13 @@ impl App {
             pages_tx,
             pages_rx,
             pages_loading: HashSet::new(),
+            pages_retry_after: HashMap::new(),
             expanded: HashSet::new(),
             pending_expand: None,
+            pending_enter: None,
+            pending_queue_plan: None,
+            pending_favorites: None,
+            importing_favorites: false,
             cover_manager: picker.map(CoverManager::new),
             force_redraw: false,
             persistence_dir: None,
@@ -436,10 +473,13 @@ impl App {
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(500))
                     && let Ok(event) = crossterm::event::read()
                 {
-                    // Only key presses and focus-gains are forwarded; everything
-                    // else (resize, mouse, …) is handled elsewhere or ignored.
-                    if matches!(event, CrosstermEvent::Key(_) | CrosstermEvent::FocusGained)
-                        && key_tx.send(event).is_err()
+                    // Forward keys, focus gains, and resizes so layout updates immediately.
+                    if matches!(
+                        event,
+                        CrosstermEvent::Key(_)
+                            | CrosstermEvent::FocusGained
+                            | CrosstermEvent::Resize(_, _)
+                    ) && key_tx.send(event).is_err()
                     {
                         break;
                     }
@@ -510,6 +550,12 @@ impl App {
                 event = key_rx.recv() => {
                     match event {
                         Some(CrosstermEvent::Key(key)) => self.handle_key(key),
+                        Some(CrosstermEvent::Resize(width, height)) => {
+                            self.terminal_width = width;
+                            self.terminal_height = height;
+                            self.normalize_focus();
+                            self.force_redraw = true;
+                        }
                         Some(CrosstermEvent::FocusGained) => {
                             // Terminal regained focus (e.g. tmux window switch back).
                             // 1. Rebuild cover protocol states so images are re-encoded.
@@ -554,6 +600,9 @@ impl App {
             // tmux focus-regain or Ctrl+L) so ratatui re-emits all escape seqs.
             if self.force_redraw {
                 self.force_redraw = false;
+                if let Some(manager) = &mut self.cover_manager {
+                    manager.invalidate_all();
+                }
                 let _ = terminal.clear();
             }
             terminal.draw(|f| self.draw(f))?;
@@ -563,12 +612,47 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // If VolumeSlider is the top popup, Esc should close it
-        if self.popup_stack.last() == Some(&PopupLayer::VolumeSlider) && key.code == KeyCode::Esc {
+        // Modal popups and the transient volume overlay get the first back key.
+        if self.detail_fullscreen_return_focus.is_some()
+            && self
+                .popup_stack
+                .iter()
+                .all(|layer| *layer == PopupLayer::VolumeSlider)
+            && self.input_mode == InputMode::Normal
+        {
+            if (key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('q') && key.modifiers.is_empty()))
+                && self.popup_stack.is_empty()
+            {
+                self.handle_command(Command::CloseDetailFullscreen);
+                return;
+            }
+            if matches!(
+                key.code,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter | KeyCode::Char('h' | 'l')
+            ) {
+                return;
+            }
+        }
+        // Dismiss the top volume overlay before leaving fullscreen detail.
+        if self.popup_stack.last() == Some(&PopupLayer::VolumeSlider)
+            && (key.code == KeyCode::Esc
+                || (self.detail_fullscreen_return_focus.is_some()
+                    && key.code == KeyCode::Char('q')
+                    && key.modifiers.is_empty()))
+        {
             self.hide_popup(PopupLayer::VolumeSlider);
             return;
         }
 
+        if key.code == KeyCode::Esc
+            && (self.pending_queue_plan.is_some()
+                || self.pending_favorites.is_some()
+                || self.pending_enter.is_some())
+        {
+            self.cancel_pending_work();
+            return;
+        }
         let cmd = crate::ui::controls::key_to_command(
             key,
             self.input_mode,
@@ -583,7 +667,30 @@ impl App {
 
     fn handle_command(&mut self, cmd: Command) {
         let previous_queue = self.persistence_dir.as_ref().map(|_| self.queue.snapshot());
+        if matches!(
+            cmd,
+            Command::Quit
+                | Command::PlaySelected
+                | Command::NextTrack
+                | Command::PrevTrack
+                | Command::RemoveFromQueue
+                | Command::RemoveFromPlaylist
+                | Command::DeletePlaylistConfirm
+        ) {
+            if let Some((_, _, task)) = self.pending_queue_plan.take() {
+                task.abort();
+            }
+        }
+        if matches!(cmd, Command::SearchEscape | Command::CloseSearch)
+            && self.pending_queue_plan.is_some()
+        {
+            self.cancel_pending_work();
+        }
+        let old_search = (self.input_mode, self.search_cursor);
         self.apply_command(cmd);
+        if old_search != (self.input_mode, self.search_cursor) {
+            self.ui.search_marquee.reset();
+        }
         if previous_queue.is_some_and(|previous| previous != self.queue.snapshot()) {
             self.save_queue();
         }
@@ -644,14 +751,18 @@ impl App {
             }
             Command::CyclePlayMode => {
                 self.queue.cycle_play_mode();
-                let label = match self.queue.play_mode {
-                    crate::queue::PlayMode::Sequential => "▶",
-                    crate::queue::PlayMode::RepeatList => "🔁",
-                    crate::queue::PlayMode::RepeatOne => "🔂",
-                    crate::queue::PlayMode::Shuffle => "🔀",
-                };
-                self.set_status(label.to_string());
+                self.set_status(self.queue.play_mode.icon().to_string());
             }
+            Command::ToggleDetailFullscreen => {
+                if self.detail_fullscreen_return_focus.is_some() {
+                    self.close_detail_fullscreen();
+                } else {
+                    self.detail_fullscreen_return_focus = Some(self.focus_column);
+                    self.focus_column = FocusColumn::Detail;
+                    self.force_redraw = true;
+                }
+            }
+            Command::CloseDetailFullscreen => self.close_detail_fullscreen(),
             Command::FocusNext => {
                 let (pv, dv) = self.column_visibility();
                 self.focus_column = self.focus_column.next(pv, dv);
@@ -782,26 +893,12 @@ impl App {
                         && self.search_cursor < self.search_results.len()
                     {
                         let track = self.search_results[self.search_cursor].clone();
-                        let title = track.title.clone();
-                        if let Some(existing_idx) = self
-                            .queue
-                            .tracks()
-                            .iter()
-                            .position(|t| t.bvid == track.bvid)
-                        {
-                            self.queue.jump_to(existing_idx);
-                            self.ui.track_list_cursor = existing_idx;
-                            let t = self.queue.current_track().cloned();
-                            if let Some(t) = t {
-                                self.play_track(t);
-                            }
-                        } else {
-                            self.queue.push(track.clone());
-                            let idx = self.queue.len() - 1;
-                            self.queue.jump_to(idx);
-                            self.play_track(track);
-                        }
-                        self.set_status(format!("Playing: {title}"));
+                        self.start_queue_plan(
+                            vec![track],
+                            0,
+                            None,
+                            QueueAction::Append { play: true },
+                        );
                     }
                 } else {
                     self.play_selected();
@@ -813,7 +910,12 @@ impl App {
                         && self.search_cursor < self.search_results.len()
                     {
                         let track = self.search_results[self.search_cursor].clone();
-                        self.add_track_to_queue_dedup(track);
+                        self.start_queue_plan(
+                            vec![track],
+                            0,
+                            None,
+                            QueueAction::Append { play: false },
+                        );
                     }
                 } else if self.focus_column == FocusColumn::TrackList && self.playlist_cursor > 0 {
                     // Row-aware: a part row queues just that part, a video row
@@ -858,6 +960,7 @@ impl App {
                 }
             }
             Command::CloseSearch => {
+                self.ui.search_marquee.reset();
                 self.search_result_rx = None;
                 self.pending_bv_fetch = None;
                 self.searching = false;
@@ -902,6 +1005,7 @@ impl App {
                 }
             }
             Command::SearchSubmit => {
+                self.ui.search_marquee.reset();
                 let query = self.search_query.clone();
                 if !query.trim().is_empty() {
                     // A newer submission owns the results, including switching
@@ -940,13 +1044,48 @@ impl App {
                     }
                 }
             }
+            Command::HelpScroll(delta) => {
+                let screen =
+                    ratatui::layout::Rect::new(0, 0, self.terminal_width, self.terminal_height);
+                let limit = crate::ui::help_view::scroll_limit(screen);
+                let current = self.help_scroll.min(limit);
+                self.help_scroll = current.saturating_add_signed(delta as isize).min(limit);
+            }
+            Command::HelpPage(direction) => {
+                let screen =
+                    ratatui::layout::Rect::new(0, 0, self.terminal_width, self.terminal_height);
+                let limit = crate::ui::help_view::scroll_limit(screen);
+                let page = crate::ui::help_view::page_height(screen);
+                self.help_scroll = self
+                    .help_scroll
+                    .min(limit)
+                    .saturating_add_signed(direction as isize * page as isize)
+                    .min(limit);
+            }
+            Command::HelpTop => self.help_scroll = 0,
+            Command::HelpBottom => {
+                let screen =
+                    ratatui::layout::Rect::new(0, 0, self.terminal_width, self.terminal_height);
+                self.help_scroll = crate::ui::help_view::scroll_limit(screen);
+            }
             Command::OpenHelp => {
+                self.help_scroll = 0;
                 self.show_popup(PopupLayer::Help);
             }
             Command::CloseHelp => {
                 self.hide_popup(PopupLayer::Help);
             }
+            Command::ImportFavorites => {
+                if self.focus_column == FocusColumn::Playlist {
+                    self.cancel_pending_work();
+                    self.importing_favorites = true;
+                    self.playlist_name_input.clear();
+                    self.show_popup(PopupLayer::PlaylistCreate);
+                }
+            }
+            Command::CancelPending => self.cancel_pending_work(),
             Command::CreatePlaylist => {
+                self.importing_favorites = false;
                 if self.focus_column == FocusColumn::Playlist {
                     self.playlist_name_input.clear();
                     self.show_popup(PopupLayer::PlaylistCreate);
@@ -959,6 +1098,10 @@ impl App {
                 self.playlist_name_input.pop();
             }
             Command::CreatePlaylistConfirm => {
+                if self.importing_favorites {
+                    self.start_favorites_import();
+                    return;
+                }
                 let name = self.playlist_name_input.trim().to_string();
                 if name.is_empty() {
                     self.set_status("Playlist name cannot be empty".to_string());
@@ -974,7 +1117,9 @@ impl App {
                 }
             }
             Command::CreatePlaylistCancel => {
+                self.cancel_pending_work();
                 self.playlist_name_input.clear();
+                self.importing_favorites = false;
                 self.hide_popup(PopupLayer::PlaylistCreate);
             }
             Command::DeletePlaylist => {
@@ -1087,7 +1232,9 @@ impl App {
                 }
             }
             Command::FocusPlaylistColumn => {
-                self.focus_column = FocusColumn::Playlist;
+                if self.column_visibility().0 {
+                    self.focus_column = FocusColumn::Playlist;
+                }
             }
             Command::FocusTrackListColumn => {
                 self.focus_column = FocusColumn::TrackList;
@@ -1099,7 +1246,9 @@ impl App {
                 }
             }
             Command::FocusDetailColumn => {
-                self.focus_column = FocusColumn::Detail;
+                if self.column_visibility().1 {
+                    self.focus_column = FocusColumn::Detail;
+                }
             }
             Command::Redraw => {
                 // Rebuild cover protocol states.  For protocols that store pixel data
@@ -1123,6 +1272,7 @@ impl App {
     }
 
     fn handle_tick(&mut self) {
+        self.poll_pending_work();
         // Check for pending stream resolution
         if let Some((track, mut rx)) = self.pending_stream.take() {
             match rx.try_recv() {
@@ -1174,6 +1324,7 @@ impl App {
                     // Treat the result exactly like a 1-item search result list —
                     // the user chooses what to do next (Enter=play, a=add to queue,
                     // A=add to playlist, Esc=return to the query).
+                    self.ui.search_marquee.reset();
                     self.search_results = vec![track];
                     self.search_cursor = 0;
                     self.input_mode = self.input_mode.search_finished(true);
@@ -1202,6 +1353,7 @@ impl App {
                     self.searching = false;
                     match result {
                         Ok(tracks) => {
+                            self.ui.search_marquee.reset();
                             self.search_results = tracks;
                             self.search_cursor = 0;
                             self.input_mode = self
@@ -1245,18 +1397,41 @@ impl App {
             match result {
                 Ok(pages) => {
                     let count = pages.len();
+                    let selected_row = self.current_row();
+                    let enter =
+                        self.pending_enter
+                            .as_ref()
+                            .is_some_and(|(playlist, cursor, bv)| {
+                                *playlist == self.playlist_cursor
+                                    && *cursor == self.ui.track_list_cursor
+                                    && bv == &bvid
+                            });
                     self.pages_cache.insert(bvid.clone(), pages);
+                    self.restore_selected_row(selected_row);
+                    if self
+                        .pending_enter
+                        .as_ref()
+                        .is_some_and(|(_, _, bv)| bv == &bvid)
+                    {
+                        self.pending_enter = None;
+                    }
+                    if enter && count == 1 {
+                        self.play_selected();
+                        continue;
+                    }
                     if explicit {
                         if count > 1 {
                             self.expanded.insert(bvid);
                         } else {
-                            self.set_status("该视频只有一个分P".to_string());
+                            self.set_status("This video has only one part".to_string());
                         }
                     }
                 }
                 Err(e) => {
+                    self.pages_retry_after
+                        .insert(bvid, std::time::Instant::now() + Duration::from_secs(30));
                     if explicit {
-                        self.set_status(format!("获取分P失败: {e}"));
+                        self.set_status(format!("Unable to load parts: {e}"));
                     }
                 }
             }
@@ -1324,16 +1499,207 @@ impl App {
         }
     }
 
+    fn cancel_pending_work(&mut self) {
+        self.pending_enter = None;
+        self.pending_expand = None;
+        if let Some((_, _, task)) = self.pending_queue_plan.take() {
+            task.abort();
+        }
+        if let Some((_, task)) = self.pending_favorites.take() {
+            task.abort();
+        }
+        self.set_status("Loading cancelled".into());
+    }
+
+    fn start_queue_plan(
+        &mut self,
+        tracks: Vec<Track>,
+        start: usize,
+        page: Option<u32>,
+        action: QueueAction,
+    ) {
+        if let Some((_, _, task)) = self.pending_queue_plan.take() {
+            task.abort();
+        }
+        if tracks.is_empty() {
+            return;
+        }
+        // A hot cache uses precisely the same pure planner, without waiting for a tick.
+        if let Ok((resolved, selected)) = plan::materialize(&tracks, start, page, &self.pages_cache)
+        {
+            self.commit_queue_plan(
+                action,
+                ResolvedPlan {
+                    tracks: resolved,
+                    start: selected,
+                    pages: HashMap::new(),
+                },
+            );
+            return;
+        }
+        let client = self.client.clone();
+        let pages = self.pages_cache.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(plan::resolve(client, tracks, start, page, pages).await);
+        });
+        self.pending_queue_plan = Some((action, rx, task));
+        self.set_status("Loading all parts… Esc to cancel".into());
+    }
+
+    fn commit_queue_plan(&mut self, action: QueueAction, resolved: ResolvedPlan) {
+        let selected_row = self.current_row();
+        self.pages_cache.extend(resolved.pages);
+        self.restore_selected_row(selected_row);
+        match action {
+            QueueAction::Replace { playlist, original } => {
+                if !self
+                    .playlists
+                    .get(playlist)
+                    .is_some_and(|p| p.tracks == original)
+                {
+                    return;
+                }
+                self.queue.clear();
+                for track in resolved.tracks {
+                    self.queue.push(track);
+                }
+                self.queue.jump_to(resolved.start);
+                self.playlist_cursor = 0;
+                self.ui.playlist_list_state.select(Some(0));
+                self.ui.track_list_cursor = self.row_of_queue_index(resolved.start).unwrap_or(0);
+                if let Some(track) = self.queue.current_track().cloned() {
+                    self.play_track(track);
+                }
+            }
+            QueueAction::Append { play } => {
+                let selected = resolved.tracks.get(resolved.start).cloned();
+                for track in resolved.tracks {
+                    if !self.queue.tracks().iter().any(|t| t.same_item(&track)) {
+                        self.queue.push(track);
+                    }
+                }
+                if play {
+                    if let Some(track) = selected {
+                        if let Some(i) =
+                            self.queue.tracks().iter().position(|t| t.same_item(&track))
+                        {
+                            self.queue.jump_to(i);
+                            self.ui.track_list_cursor = self.row_of_queue_index(i).unwrap_or(i);
+                            self.play_track(track);
+                        }
+                    }
+                } else {
+                    self.set_status("Added to queue".into());
+                }
+            }
+        }
+        self.save_queue();
+    }
+
+    fn start_favorites_import(&mut self) {
+        let id = match parse_favorite_folder_id(&self.playlist_name_input) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_status(format!("Invalid favorite folder: {e}"));
+                return;
+            }
+        };
+        if let Some((_, task)) = self.pending_favorites.take() {
+            task.abort();
+        }
+        let client = self.client.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(fetch_favorites_snapshot(&client, id).await);
+        });
+        self.pending_favorites = Some((rx, task));
+        self.playlist_name_input.clear();
+        self.hide_popup(PopupLayer::PlaylistCreate);
+        self.importing_favorites = false;
+        self.set_status("Importing favorites… Esc to cancel".into());
+    }
+
+    fn poll_pending_work(&mut self) {
+        if let Some((action, mut rx, task)) = self.pending_queue_plan.take() {
+            match rx.try_recv() {
+                Ok(Ok(plan)) => self.commit_queue_plan(action, plan),
+                Ok(Err(e)) => {
+                    self.set_status(format!("Unable to load parts: {e}; queue preserved"))
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    self.pending_queue_plan = Some((action, rx, task))
+                }
+                Err(_) => self.set_status("Part loading stopped; queue preserved".into()),
+            }
+        }
+        if let Some((mut rx, task)) = self.pending_favorites.take() {
+            match rx.try_recv() {
+                Ok(Ok(snapshot)) => {
+                    let base = if snapshot.folder.title.trim().is_empty() {
+                        format!("Favorites {}", snapshot.folder.id)
+                    } else {
+                        snapshot.folder.title
+                    };
+                    let mut name = base.clone();
+                    let mut suffix = 2;
+                    while self.playlists.iter().any(|p| p.name == name) {
+                        name = format!("{base} ({suffix})");
+                        suffix += 1;
+                    }
+                    let mut playlist = Playlist::new(name);
+                    for video in snapshot.videos {
+                        playlist.add_track(Track {
+                            bvid: video.bvid,
+                            cid: 0,
+                            title: video.title,
+                            author: video.author,
+                            duration: Duration::from_secs(video.duration_secs),
+                            cover_url: video.cover_url,
+                            part: None,
+                            page: None,
+                            source: None,
+                        });
+                    }
+                    let count = playlist.tracks.len();
+                    self.playlists.push(playlist);
+                    self.playlist_cursor = self.playlists.len();
+                    self.ui
+                        .playlist_list_state
+                        .select(Some(self.playlist_cursor));
+                    self.ui.track_list_cursor = 0;
+                    self.save_playlists();
+                    self.set_status(format!(
+                        "Imported {count} videos; skipped {}",
+                        snapshot.skipped.len()
+                    ));
+                }
+                Ok(Err(e)) => self.set_status(format!("Favorite import failed: {e}")),
+                Err(mpsc::error::TryRecvError::Empty) => self.pending_favorites = Some((rx, task)),
+                Err(_) => self.set_status("Favorite import stopped".into()),
+            }
+        }
+    }
+
     fn play_track(&mut self, track: Track) {
         let client = self.client.clone();
         let bvid = track.bvid.clone();
         let cid = track.cid;
+        let page = track.page;
 
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let target_cid = if cid == 0 {
-                match get_video_info(&client, &bvid).await {
-                    Ok(info) => info.cid,
+                match get_video_pages(&client, &bvid).await {
+                    Ok(pages) => match pages.iter().find(|p| p.page == page.unwrap_or(1)) {
+                        Some(p) => p.cid,
+                        None => {
+                            let _ = tx.send(Err(crate::error::BilibiliError::Parse(
+                                "Requested part is unavailable".into(),
+                            )));
+                            return;
+                        }
+                    },
                     Err(e) => {
                         let _ = tx.send(Err(e));
                         return;
@@ -1363,6 +1729,17 @@ impl App {
             return;
         };
 
+        if matches!(row, TrackRow::Video(_))
+            && self
+                .active_track_list()
+                .get(row.track_index())
+                .is_some_and(|t| t.page.is_none() && !self.pages_cache.contains_key(&t.bvid))
+        {
+            let bvid = self.active_track_list()[row.track_index()].bvid.clone();
+            self.pending_enter = Some((self.playlist_cursor, self.ui.track_list_cursor, bvid));
+            self.toggle_expand_current();
+            return;
+        }
         if self.row_is_expandable(row) {
             self.toggle_expand(row.track_index());
         } else if self.playlist_cursor == 0 {
@@ -1447,6 +1824,22 @@ impl App {
             .iter()
             .position(|t| t.same_item(&part_track))
         {
+            let mut previous = idx;
+            for page in &pages[page_idx + 1..] {
+                let track = page.to_track(&base);
+                if let Some(existing) = self.queue.tracks().iter().position(|q| q.same_item(&track))
+                {
+                    previous = existing;
+                } else {
+                    previous = self.queue.insert_batch_after(Some(previous), vec![track]);
+                }
+            }
+            let idx = self
+                .queue
+                .tracks()
+                .iter()
+                .position(|q| q.same_item(&part_track))
+                .unwrap_or(idx);
             self.queue.jump_to(idx);
             if let Some(row) = self.row_of_queue_index(idx) {
                 self.ui.track_list_cursor = row;
@@ -1492,51 +1885,23 @@ impl App {
             return;
         }
 
-        let page_start = match row {
-            TrackRow::Page(_, p) => Some(p),
-            // A header means "this video", so start from its first part.
-            TrackRow::Video(_) | TrackRow::PartGroupHeader(_) => None,
-        };
-
-        let mut seq: Vec<Track> = Vec::with_capacity(tracks.len());
-        let mut play_at = 0usize;
-        for (offset, base) in tracks.iter().enumerate() {
-            match self
+        let page = match row {
+            TrackRow::Page(_, p) => self
                 .pages_cache
-                .get(&base.bvid)
-                .filter(|pages| pages.len() > 1)
-            {
-                Some(pages) => {
-                    for (p, page) in pages.iter().enumerate() {
-                        if offset == start && page_start.unwrap_or(0) == p {
-                            play_at = seq.len();
-                        }
-                        seq.push(page.to_track(base));
-                    }
-                }
-                None => {
-                    if offset == start {
-                        play_at = seq.len();
-                    }
-                    seq.push(base.clone());
-                }
-            }
-        }
-        if seq.is_empty() {
-            return;
-        }
-
-        self.queue.clear();
-        for t in seq {
-            self.queue.push(t);
-        }
-        self.queue.jump_to(play_at);
-        // Switch the middle column to the queue view (existing behaviour).
-        self.playlist_cursor = 0;
-        self.ui.playlist_list_state.select(Some(0));
-        self.ui.track_list_cursor = self.row_of_queue_index(play_at).unwrap_or(play_at);
-        let t = self.queue.tracks()[play_at].clone();
-        self.play_track(t);
+                .get(&tracks[start].bvid)
+                .and_then(|pages| pages.get(p))
+                .map(|p| p.page),
+            _ => tracks[start].page,
+        };
+        self.start_queue_plan(
+            tracks.clone(),
+            start,
+            page,
+            QueueAction::Replace {
+                playlist: pl_idx,
+                original: tracks,
+            },
+        );
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -1571,6 +1936,8 @@ impl App {
 
     // Popup management
     pub(crate) fn show_popup(&mut self, layer: PopupLayer) {
+        self.ui.search_marquee.reset();
+        self.force_redraw = true;
         if layer == PopupLayer::VolumeSlider {
             self.volume_popup_time = Some(std::time::Instant::now());
         }
@@ -1582,6 +1949,8 @@ impl App {
     }
 
     fn hide_popup(&mut self, layer: PopupLayer) {
+        self.ui.search_marquee.reset();
+        self.force_redraw = true;
         self.popup_stack.retain(|&l| l != layer);
         if layer == PopupLayer::VolumeSlider {
             self.volume_popup_time = None;
@@ -1622,7 +1991,7 @@ impl App {
             // Label the start of each run of parts with its video.  A part whose
             // video row is already on screen (the parent, expanded) needs no
             // header -- the row above it already carries the title.
-            if track.page.is_some() && previous_bvid != Some(track.bvid.as_str()) {
+            if self.has_visible_part(track) && previous_bvid != Some(track.bvid.as_str()) {
                 rows.push(TrackRow::PartGroupHeader(i));
             }
             previous_bvid = Some(track.bvid.as_str());
@@ -1632,11 +2001,38 @@ impl App {
             if track.page.is_some() || !self.expanded.contains(&track.bvid) {
                 continue;
             }
-            if let Some(pages) = self.pages_cache.get(&track.bvid) {
+            if let Some(pages) = self
+                .pages_cache
+                .get(&track.bvid)
+                .filter(|pages| pages.len() > 1)
+            {
                 rows.extend((0..pages.len()).map(|p| TrackRow::Page(i, p)));
             }
         }
         rows
+    }
+
+    fn restore_selected_row(&mut self, selected_row: Option<TrackRow>) {
+        if let Some(selected) = selected_row {
+            let rows = self.visible_rows();
+            let position = rows.iter().position(|row| *row == selected).or_else(|| {
+                rows.iter()
+                    .position(|row| *row == TrackRow::Video(selected.track_index()))
+            });
+            if let Some(position) = position {
+                self.ui.track_list_cursor = position;
+            }
+        }
+    }
+
+    /// Hide legacy synthetic P1 labels once the source is confirmed single-part.
+    /// Playback identity stays intact, including explicitly saved part selections.
+    pub fn has_visible_part(&self, track: &Track) -> bool {
+        track.page.is_some()
+            && !self
+                .pages_cache
+                .get(&track.bvid)
+                .is_some_and(|pages| pages.len() == 1)
     }
 
     /// Number of rows in the middle column (tracks + expanded parts).
@@ -1663,6 +2059,7 @@ impl App {
             // part fields and let the inherited title/author show through.
             TrackRow::PartGroupHeader(_) => {
                 let mut video = base.clone();
+                video.cid = 0;
                 video.part = None;
                 video.page = None;
                 Some(video)
@@ -1784,12 +2181,16 @@ impl App {
                 break;
             }
             let track = &tracks[start + (cursor - start + offset) % span];
-            // Part-level tracks are leaves; their parent's list is already cached
-            // (or will be) under the same bvid.
-            if track.page.is_some() || track.bvid.is_empty() {
+            // Saved leaves also need metadata after restart so a single-part
+            // video does not retain a legacy synthetic P1 label.
+            if track.bvid.is_empty() {
                 continue;
             }
-            if self.pages_cache.contains_key(&track.bvid)
+            if self
+                .pages_retry_after
+                .get(&track.bvid)
+                .is_some_and(|until| *until > std::time::Instant::now())
+                || self.pages_cache.contains_key(&track.bvid)
                 || self.pages_loading.contains(&track.bvid)
             {
                 continue;
@@ -1860,79 +2261,48 @@ impl App {
             return;
         };
 
-        match row {
-            TrackRow::Page(_, p) => {
-                let Some(track) = self
-                    .pages_cache
-                    .get(&base.bvid)
-                    .and_then(|pages| pages.get(p))
-                    .map(|page| page.to_track(&base))
-                else {
-                    return;
-                };
-                self.add_track_to_queue_dedup(track);
+        let track = match row {
+            TrackRow::Page(_, _) => self.row_track(row),
+            TrackRow::PartGroupHeader(_) => {
+                let mut t = base;
+                t.page = None;
+                t.part = None;
+                t.cid = 0;
+                Some(t)
             }
-            // A header stands for its video, so `a` queues the whole thing.
-            TrackRow::Video(_) | TrackRow::PartGroupHeader(_) => {
-                let pages = self
-                    .pages_cache
-                    .get(&base.bvid)
-                    .filter(|pages| pages.len() > 1)
-                    .cloned();
-                match pages {
-                    Some(pages) => {
-                        let mut first: Option<usize> = None;
-                        for page in &pages {
-                            let track = page.to_track(&base);
-                            if let Some(idx) =
-                                self.queue.tracks().iter().position(|q| q.same_item(&track))
-                            {
-                                first.get_or_insert(idx);
-                            } else {
-                                self.queue.push(track);
-                                first.get_or_insert(self.queue.len() - 1);
-                            }
-                        }
-                        self.set_status(format!(
-                            "Added to queue: {} ({} 个分P)",
-                            base.title,
-                            pages.len()
-                        ));
-                    }
-                    None => self.add_track_to_queue_dedup(base),
-                }
-            }
-        }
-    }
-
-    fn add_track_to_queue_dedup(&mut self, track: Track) {
-        // Two parts of one video are distinct items — dedup on (bvid, cid).
-        if let Some(existing_idx) = self.queue.tracks().iter().position(|t| t.same_item(&track)) {
-            self.queue.jump_to(existing_idx);
-            // Only meaningful in the queue view; in a playlist view the cursor
-            // indexes a different list.
-            if let Some(row) = self.row_of_queue_index(existing_idx) {
-                self.ui.track_list_cursor = row;
-            }
-            let t = self.queue.tracks()[existing_idx].clone();
-            self.play_track(t);
-            self.set_status(format!(
-                "Already in queue – jumped to: {}",
-                track.display_title()
-            ));
-        } else {
-            self.queue.push(track.clone());
-            self.set_status(format!("Added to queue: {}", track.display_title()));
+            TrackRow::Video(_) => Some(base),
+        };
+        if let Some(track) = track {
+            self.start_queue_plan(vec![track], 0, None, QueueAction::Append { play: false });
         }
     }
 
     fn column_visibility(&self) -> (bool, bool) {
-        if self.terminal_width >= 80 {
-            (true, true)
-        } else if self.terminal_width >= 50 {
-            (true, false)
-        } else {
-            (false, false)
+        let visibility = crate::ui::layout::ColumnVisibility::from_size(
+            self.terminal_width,
+            self.terminal_height,
+        );
+        (visibility.playlist, visibility.detail)
+    }
+
+    fn normalize_focus(&mut self) {
+        if self.detail_fullscreen_return_focus.is_some() {
+            self.focus_column = FocusColumn::Detail;
+            return;
+        }
+        let (playlist, detail) = self.column_visibility();
+        if matches!(self.focus_column, FocusColumn::Playlist) && !playlist
+            || matches!(self.focus_column, FocusColumn::Detail) && !detail
+        {
+            self.focus_column = FocusColumn::TrackList;
+        }
+    }
+
+    fn close_detail_fullscreen(&mut self) {
+        if let Some(focus) = self.detail_fullscreen_return_focus.take() {
+            self.focus_column = focus;
+            self.normalize_focus();
+            self.force_redraw = true;
         }
     }
 
@@ -1942,27 +2312,33 @@ impl App {
         self.terminal_width = area.width;
         self.terminal_height = area.height;
 
-        let visibility = crate::ui::layout::ColumnVisibility::from_width(area.width);
+        self.normalize_focus();
+        let visibility = crate::ui::layout::ColumnVisibility::from_size(area.width, area.height);
         let (header, body, status) = crate::ui::layout::main_layout(area);
         let (playlist, track_list, detail) = crate::ui::layout::body_columns(body, visibility);
 
         crate::ui::draw_header(f, self, header);
         crate::ui::draw_status_bar(f, self, status);
 
-        crate::ui::playlist_view::draw(f, self, playlist);
-
         let mut cover_manager = self.cover_manager.take();
-        crate::ui::now_playing::draw(f, self, &mut cover_manager, detail);
+        if self.detail_fullscreen_return_focus.is_some() {
+            crate::ui::now_playing::draw_fullscreen(f, self, &mut cover_manager, body);
+        } else {
+            crate::ui::playlist_view::draw(f, self, playlist);
+            crate::ui::now_playing::draw(f, self, &mut cover_manager, detail);
+        }
         self.cover_manager = cover_manager;
 
         let mut ui = std::mem::take(&mut self.ui);
-        crate::ui::track_list::draw(f, self, &mut ui, track_list);
+        if self.detail_fullscreen_return_focus.is_none() {
+            crate::ui::track_list::draw(f, self, &mut ui, track_list);
+        }
 
         if self.popup_stack.contains(&PopupLayer::VolumeSlider) {
             crate::ui::volume_slider::draw(f, self, area);
         }
         if self.popup_stack.contains(&PopupLayer::Search) {
-            crate::ui::search_view::draw(f, self, area);
+            crate::ui::search_view::draw(f, self, &mut ui, area);
         }
         if self.popup_stack.contains(&PopupLayer::Help) {
             crate::ui::help_view::draw(f, self, area);
@@ -2043,6 +2419,218 @@ mod tests {
 
     fn test_app() -> App {
         App::new_with_playlists(Config::default(), None, Vec::new()).unwrap()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn favorite_input_is_scoped_to_one_open_session() {
+        let mut app = test_app();
+        app.focus_column = FocusColumn::Playlist;
+        app.playlist_name_input = "old playlist name".into();
+        press(&mut app, KeyCode::Char('I'));
+        assert!(app.playlist_name_input.is_empty());
+        for ch in "invalid URL".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_popup_active(PopupLayer::PlaylistCreate));
+        assert_eq!(app.playlist_name_input, "invalid URL");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.playlist_name_input.is_empty());
+        assert!(!app.importing_favorites);
+        press(&mut app, KeyCode::Char('I'));
+        assert!(app.playlist_name_input.is_empty());
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('c'));
+        assert!(app.playlist_name_input.is_empty());
+        assert!(!app.importing_favorites);
+    }
+
+    #[tokio::test]
+    async fn submitted_favorite_input_is_cleared_after_async_failure_or_cancel() {
+        let mut app = test_app();
+        app.focus_column = FocusColumn::Playlist;
+        press(&mut app, KeyCode::Char('I'));
+        for ch in "123".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.playlist_name_input.is_empty());
+        assert!(!app.is_popup_active(PopupLayer::PlaylistCreate));
+        // Replace the spawned request before yielding, avoiding network access.
+        let (_, task) = app.pending_favorites.take().unwrap();
+        task.abort();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async {});
+        app.pending_favorites = Some((rx, task));
+        tx.send(Err(crate::error::BilibiliError::Parse(
+            "test failure".into(),
+        )))
+        .unwrap();
+        app.poll_pending_work();
+        press(&mut app, KeyCode::Char('I'));
+        assert!(app.playlist_name_input.is_empty());
+        press(&mut app, KeyCode::Esc);
+        let (_tx, rx) = mpsc::unbounded_channel();
+        app.pending_favorites = Some((rx, tokio::spawn(async {})));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.pending_favorites.is_none());
+        press(&mut app, KeyCode::Char('I'));
+        assert!(app.playlist_name_input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_page_metadata_keeps_legacy_leaf_and_later_track_selected() {
+        for (cursor, selected, with_later) in [(0, 0, false), (1, 0, false), (2, 1, true)] {
+            let mut app = test_app();
+            let mut saved = track("legacy");
+            saved.page = Some(1);
+            saved.part = Some("old P1".into());
+            app.queue.push(saved);
+            if with_later {
+                app.queue.push(track("later"));
+            }
+            app.ui.track_list_cursor = cursor;
+            let before = if cursor == 0 {
+                TrackRow::PartGroupHeader(0)
+            } else {
+                TrackRow::Video(selected)
+            };
+            assert_eq!(app.current_row(), Some(before));
+            app.pages_tx.send(("legacy".into(), Ok(parts(1)))).unwrap();
+            app.handle_tick();
+            assert_eq!(app.ui.track_list_cursor, selected);
+            assert_eq!(app.current_row(), Some(TrackRow::Video(selected)));
+            assert_eq!(app.queue.tracks()[0].page, Some(1));
+        }
+    }
+
+    #[test]
+    fn fullscreen_roundtrip_preserves_focus_and_lists_across_resize() {
+        let mut app = test_app();
+        app.terminal_width = 120;
+        app.focus_column = FocusColumn::Playlist;
+        app.ui.track_list_cursor = 4;
+        app.ui.track_list_scroll = 3;
+        app.playlist_cursor = 2;
+        app.ui.playlist_list_state.select(Some(2));
+        app.ui.playlist_list_state.offset_mut().clone_from(&1);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(
+            app.detail_fullscreen_return_focus,
+            Some(FocusColumn::Playlist)
+        );
+        assert_eq!(app.focus_column, FocusColumn::Detail);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus_column, FocusColumn::Detail);
+        let volume = app.volume;
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.volume, volume.saturating_sub(5));
+        assert_eq!(app.ui.track_list_cursor, 4);
+        assert_eq!(app.ui.track_list_scroll, 3);
+        assert_eq!(app.playlist_cursor, 2);
+        assert_eq!(app.ui.playlist_list_state.offset(), 1);
+        // First Escape dismisses the transient volume overlay.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        app.terminal_width = 60;
+        app.normalize_focus();
+        assert_eq!(
+            app.detail_fullscreen_return_focus,
+            Some(FocusColumn::Playlist)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.detail_fullscreen_return_focus.is_none());
+        assert_eq!(app.focus_column, FocusColumn::TrackList);
+        assert_eq!(app.ui.track_list_scroll, 3);
+    }
+
+    #[test]
+    fn fullscreen_modal_keys_and_hidden_columns_do_not_leak() {
+        let mut app = test_app();
+        app.terminal_width = 60;
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focus_column, FocusColumn::TrackList);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.focus_column, FocusColumn::TrackList);
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_popup_active(PopupLayer::Help));
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.search_query, "v");
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::SearchNormal);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_popup_active(PopupLayer::Search));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.detail_fullscreen_return_focus.is_none());
+        assert_eq!(app.focus_column, FocusColumn::TrackList);
+        app.terminal_width = 120;
+        app.focus_column = FocusColumn::Detail;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail_fullscreen_return_focus,
+            Some(FocusColumn::Detail)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus_column, FocusColumn::Detail);
+    }
+
+    #[test]
+    fn q_unwinds_fullscreen_popups_before_quitting() {
+        let mut app = test_app();
+        app.terminal_width = 120;
+        app.focus_column = FocusColumn::Playlist;
+        app.ui.track_list_cursor = 4;
+        app.ui.track_list_scroll = 3;
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.is_popup_active(PopupLayer::VolumeSlider));
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.is_popup_active(PopupLayer::Help));
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.search_query, "q");
+        assert!(!app.should_quit);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.is_popup_active(PopupLayer::Search));
+        assert!(app.detail_fullscreen_return_focus.is_some());
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.detail_fullscreen_return_focus.is_none());
+        assert_eq!(app.focus_column, FocusColumn::Playlist);
+        assert_eq!(app.ui.track_list_cursor, 4);
+        assert_eq!(app.ui.track_list_scroll, 3);
+        assert!(!app.should_quit);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn q_in_playlist_name_is_text_and_main_view_quit_is_preserved() {
+        let mut app = test_app();
+        app.show_popup(PopupLayer::PlaylistCreate);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.should_quit);
+        assert!(app.is_popup_active(PopupLayer::PlaylistCreate));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
     }
 
     // Seed an existing on-disk queue, issue the same delete command as the UI,
@@ -2611,6 +3199,9 @@ mod tests {
         // The whole playlist replaces the queue; the cursor only decides where
         // playback starts.  It used to drop everything above the cursor.
         let mut app = test_app();
+        app.pages_cache.insert("BV2".into(), parts(1));
+        app.pages_cache.insert("BV1".into(), parts(1));
+        app.pages_cache.insert("BV3".into(), parts(1));
         app.playlists.push(Playlist::new("P"));
         for bvid in ["BV1", "BV2", "BV3"] {
             app.playlists[0].add_track(track(bvid));
@@ -2640,6 +3231,8 @@ mod tests {
         // part the cursor was on.
         let mut app = test_app();
         app.pages_cache.insert("BV2".to_string(), parts(3));
+        app.pages_cache.insert("BV1".into(), parts(1));
+        app.pages_cache.insert("BV3".into(), parts(1));
         app.playlists.push(Playlist::new("P"));
         for bvid in ["BV1", "BV2", "BV3"] {
             app.playlists[0].add_track(track(bvid));
@@ -2663,6 +3256,139 @@ mod tests {
             Some(2),
             "playback starts on P2, with BV1 and P1 still ahead of it"
         );
+    }
+
+    #[test]
+    fn adding_saved_part_never_expands_its_video() {
+        let mut app = test_app();
+        let base = track("BV1");
+        app.pages_cache.insert(base.bvid.clone(), parts(3));
+        app.playlists.push(Playlist::new("parts"));
+        app.playlists[0].add_track(parts(3)[1].to_track(&base));
+        app.playlist_cursor = 1;
+        app.add_row_to_queue(TrackRow::Video(0));
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.queue.tracks()[0].page, Some(2));
+    }
+
+    #[tokio::test]
+    async fn search_video_starts_at_p1_even_when_p3_is_queued() {
+        let mut app = test_app();
+        let base = track("BV1");
+        app.pages_cache.insert(base.bvid.clone(), parts(3));
+        app.queue.push(parts(3)[2].to_track(&base));
+        app.start_queue_plan(vec![base], 0, None, QueueAction::Append { play: true });
+        assert_eq!(app.queue.len(), 3);
+        assert_eq!(app.queue.current_track().unwrap().page, Some(1));
+    }
+
+    #[tokio::test]
+    async fn cancelled_plan_and_failed_plan_preserve_existing_queue() {
+        let mut app = test_app();
+        app.queue.push(track("keep"));
+        let before = app.queue.snapshot();
+        let (tx, rx) = mpsc::unbounded_channel();
+        app.pending_queue_plan = Some((
+            QueueAction::Append { play: true },
+            rx,
+            tokio::spawn(async {}),
+        ));
+        app.cancel_pending_work();
+        assert!(
+            tx.send(Ok(ResolvedPlan {
+                tracks: vec![track("old")],
+                start: 0,
+                pages: HashMap::new()
+            }))
+            .is_err()
+        );
+        let (tx, rx) = mpsc::unbounded_channel();
+        app.pending_queue_plan = Some((
+            QueueAction::Append { play: true },
+            rx,
+            tokio::spawn(async {}),
+        ));
+        tx.send(Err(crate::error::BilibiliError::Parse("offline".into())))
+            .ok();
+        app.poll_pending_work();
+        assert_eq!(before, app.queue.snapshot());
+    }
+
+    #[test]
+    fn replaced_playlist_source_is_rejected_before_commit() {
+        let mut app = test_app();
+        app.queue.push(track("keep"));
+        app.playlists.push(Playlist::new("source"));
+        app.playlists[0].add_track(track("changed"));
+        app.playlist_cursor = 1;
+        app.commit_queue_plan(
+            QueueAction::Replace {
+                playlist: 0,
+                original: vec![track("original")],
+            },
+            ResolvedPlan {
+                tracks: vec![track("stale")],
+                start: 0,
+                pages: HashMap::new(),
+            },
+        );
+        assert_eq!(app.queue.tracks()[0].bvid, "keep");
+    }
+
+    #[tokio::test]
+    async fn async_commit_survives_browsing_and_persists_complete_queue() {
+        let mut app = test_app();
+        let dir = tempfile::tempdir().unwrap();
+        app.persistence_dir = Some(dir.path().to_path_buf());
+        let base = track("source");
+        app.playlists.push(Playlist::new("source"));
+        app.playlists[0].add_track(base.clone());
+        let action = QueueAction::Replace {
+            playlist: 0,
+            original: vec![base.clone()],
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        app.pending_queue_plan = Some((action, rx, tokio::spawn(async {})));
+        app.handle_command(Command::MoveCursorDown);
+        assert!(
+            app.pending_queue_plan.is_some(),
+            "browsing does not cancel explicit playback intent"
+        );
+        let tracks = parts(3).iter().map(|p| p.to_track(&base)).collect();
+        tx.send(Ok(ResolvedPlan {
+            tracks,
+            start: 1,
+            pages: HashMap::new(),
+        }))
+        .ok();
+        app.poll_pending_work();
+        let state = AppState::load_from(&dir.path().join("state.json")).unwrap();
+        assert_eq!(state.queue_tracks.len(), 3);
+        assert_eq!(state.queue_current_index, Some(1));
+        assert_eq!(state.queue_tracks[1].page, Some(2));
+    }
+
+    #[tokio::test]
+    async fn selecting_existing_part_appends_missing_tail_after_existing_successors() {
+        for existing in [vec![0, 1], vec![0, 2]] {
+            let mut app = test_app();
+            let base = track("BV1");
+            app.pages_cache.insert(base.bvid.clone(), parts(3));
+            app.expanded.insert(base.bvid.clone());
+            app.queue.push(base.clone());
+            for page in existing {
+                app.queue.push(parts(3)[page].to_track(&base));
+            }
+            app.play_page_row(0, 0);
+            assert_eq!(
+                app.queue
+                    .tracks()
+                    .iter()
+                    .filter_map(|t| t.page)
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+        }
     }
 
     #[test]
@@ -2700,5 +3426,20 @@ mod tests {
     fn test_extract_bvid_case_sensitive() {
         // BV IDs are case-sensitive — lowercase "bv" should not match
         assert_eq!(extract_bvid("bv1xx411c7mD"), None);
+    }
+
+    #[test]
+    fn cycling_play_mode_shows_only_icon() {
+        let mut app = App::new_with_playlists(Config::default(), None, Vec::new()).unwrap();
+        for mode in [
+            crate::queue::PlayMode::RepeatList,
+            crate::queue::PlayMode::RepeatOne,
+            crate::queue::PlayMode::Shuffle,
+            crate::queue::PlayMode::Sequential,
+        ] {
+            app.handle_command(crate::command::Command::CyclePlayMode);
+            assert_eq!(app.queue.play_mode, mode);
+            assert_eq!(app.status_message.as_deref(), Some(mode.icon()));
+        }
     }
 }

@@ -4,12 +4,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, PopupLayer};
 
 /// Draw search overlay: centered popup with input box + result list.
-pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
-    let width = 60u16.min(screen.width.saturating_sub(4));
-    let height = 20u16.min(screen.height.saturating_sub(4));
+pub fn draw(f: &mut Frame, app: &App, ui: &mut super::Ui, screen: Rect) {
+    let width = ((u32::from(screen.width) * 3 / 4) as u16).clamp(60, 100);
+    let height = ((u32::from(screen.height) * 3 / 4) as u16).min(30);
     let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);
 
     // Clear the background
@@ -29,6 +29,13 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
 
     // Draw input box
     let input_text = format!("/{}", app.search_query);
+    let input_block = Block::default().borders(Borders::ALL);
+    let input_inner = input_block.inner(chunks[0]);
+    let (input_text, cursor_column) = super::popup::input_window(
+        &input_text,
+        app.search_query_cursor.saturating_add(1),
+        input_inner.width,
+    );
     let hint = match app.input_mode {
         InputMode::SearchInput => "Enter search · Esc normal",
         InputMode::SearchNormal => "i/a edit · j results · Esc close",
@@ -60,6 +67,20 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         app.ui.theme.unfocused_border
     };
 
+    let row_width = usize::from(chunks[1].width.saturating_sub(2));
+    let active = app.input_mode == InputMode::SearchResults
+        && !app.popup_stack.iter().any(|layer| {
+            matches!(
+                layer,
+                PopupLayer::Help
+                    | PopupLayer::PlaylistCreate
+                    | PopupLayer::PlaylistDeleteConfirm
+                    | PopupLayer::AddToPlaylist
+            )
+        });
+    if !active {
+        ui.search_marquee.reset();
+    }
     let items: Vec<ListItem> = app
         .search_results
         .iter()
@@ -76,6 +97,22 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
                 Style::default()
             };
             let title = format!("{} - {}", track.title, track.author);
+            let title = if active && is_selected {
+                // Include the entire screen geometry so every resize starts at the head.
+                let identity = format!(
+                    "{screen:?}:{}:{}:{}:{title}",
+                    app.search_query, app.search_cursor, track.bvid
+                );
+                let offset = ui.search_marquee.offset(
+                    &identity,
+                    &title,
+                    row_width,
+                    std::time::Instant::now(),
+                );
+                super::marquee::window(&title, offset, row_width)
+            } else {
+                title
+            };
             ListItem::new(Span::styled(title, style))
         })
         .collect();
@@ -97,24 +134,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
 
-    // Set cursor position
-    if app.input_mode.search_focus_input() {
-        // Use unicode-width for CJK characters
-        let query_prefix: String = app
-            .search_query
-            .chars()
-            .take(app.search_query_cursor)
-            .collect();
-        let query_width: usize = query_prefix
-            .chars()
-            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-            .sum();
-
-        let cursor_x = chunks[0].x + 1 + 1 + query_width as u16;
-        let cursor_y = chunks[0].y + 1;
-
-        // In Normal mode on input, we might want a different cursor look,
-        // but terminal cursor is usually a block or line.
-        f.set_cursor_position((cursor_x, cursor_y));
+    if app.input_mode.search_focus_input() && input_inner.width > 0 && input_inner.height > 0 {
+        f.set_cursor_position((input_inner.x.saturating_add(cursor_column), input_inner.y));
     }
 }

@@ -39,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, area: Rect) {
             // is -- so only real queue entries can carry the playing highlight.
             let is_page_row = matches!(row, TrackRow::Page(_, _));
             let is_current = is_queue_view && current_idx == Some(track_idx) && !is_page_row;
-            let is_part = is_page_row || track.page.is_some();
+            let is_part = is_page_row || app.has_visible_part(&track);
 
             let is_header = matches!(row, TrackRow::PartGroupHeader(_));
             let style = if is_current {
@@ -66,7 +66,7 @@ pub fn draw(f: &mut Frame, app: &App, ui: &mut Ui, area: Rect) {
                     // `▶` marks the currently playing row; `▾`/`▸` is the fold
                     // state, so the two never collide.
                     let playing = if is_current { "▶ " } else { "  " };
-                    match track.page {
+                    match track.page.filter(|_| app.has_visible_part(&track)) {
                         // A queued part: name it after the part, otherwise
                         // every part of one video looks identical in the queue.
                         Some(page) => format!(

@@ -105,10 +105,10 @@ bili-player-cli 是一个终端音乐播放器，播放来自 Bilibili 视频的
 | T-3 | Status | P0 | 1 行，Gauge 进度条 + 时间 + 音量图标+数值 |
 | T-4 | Popup Overlay 系统 | P0 | z-order 层叠渲染，anchor 定位，painter's algorithm |
 | T-5 | 搜索 overlay | P0 | 居中 popup，输入框+结果列表，`/` 触发 |
-| T-6 | 帮助 overlay | P0 | 全屏快捷键列表，`?` 触发 |
+| T-6 | 帮助 overlay | P0 | 居中可滚动快捷键列表，`?` 触发；j/k、方向键滚动，PgUp/PgDn 翻页，Home/End/g/G 首尾 |
 | T-7 | 音量滑钮 overlay | P0 | 状态栏上方居中，`↑`/`↓` 调音量时弹出，自动消失 |
-| T-8 | 窄终端自适应 | P0 | ≥80 列三栏，50-79 列两栏，<50 列仅中栏 |
-| T-9 | 封面图显示 ✅ | P1 | 右栏曲目详情区，StatefulImage widget，Sixel/Kitty/iTerm2/Halfblocks，占上半部分高度，含磁盘 LRU 缓存 |
+| T-8 | 窄终端自适应 | P0 | ≥110 列且≥18 行三栏，≥72 列显示歌单和曲目，<72 列仅曲目；隐藏焦点列时回到曲目 |
+| T-9 | 封面图显示 ✅ | P1 | 右栏曲目详情区，StatefulImage widget，Sixel/Kitty/iTerm2/Halfblocks，保留元数据行后自适应等比居中显示，支持详情全屏，含磁盘 LRU 缓存 |
 | T-10 | 颜色主题配置 | P3 | `config.toml` 中 `[theme]` 子表，各颜色字段均可独立覆盖；支持命名色（`cyan`）及 hex（`#RRGGBB`）；未配置字段 fallback 到内置默认值。可配字段包括：`cursor_bg`/`cursor_fg`（光标高亮）、`playing_item`（正在播放曲目颜色）、`focused_border`/`unfocused_border`（边框）、`text_primary`/`text_secondary`（文字）、`popup_border`、`header_bg`/`header_fg`、`status_bg`/`status_fg`、`gauge_filled`、`search_input` |
 | T-11 | 中文对齐 | P1 | CJK 字符正确计算宽度 |
 | T-12 | 创建歌单 popup | P0 | 居中输入框，`c` 触发，Enter 确认，Esc 取消 |
@@ -339,8 +339,9 @@ Playlist {
 | 模式 | 触发 | 退出 |
 |------|------|------|
 | Normal | 默认 | — |
-| Search Input | `/` | `Esc` / `Enter` |
-| Search Normal | `Enter`/`Esc` 结束输入后 | `Esc` / `q` |
+| Search Input (INSERT) | `/`、搜索内 `i` / `/` | `Esc` 回到 Search Normal；`Enter` 搜索并聚焦结果 |
+| Search Normal (输入框导航) | 搜索内 `Esc`、结果首项上移 | `Esc` / `q` 关闭；`i` / `/` / `a` 编辑；j/↓/Tab 进入结果 |
+| Search Results | 输入框 `Enter`、j/↓/Tab | `Esc` / `Tab` / `Shift+Tab` 回到 Search Normal；`q` 关闭 |
 
 > **注意**: 歌单创建、歌单删除确认、添加到歌单选择均通过 Popup overlay 实现，不引入新的输入模式。
 
@@ -348,9 +349,11 @@ Playlist {
 
 | 按键 | 功能 |
 |------|------|
-| `q` / `Ctrl+C` | 退出 |
+| `q`（主界面） / `Ctrl+C` | 退出；详情全屏 q 返回，弹窗先按其规则处理 |
 | `/` | 打开搜索 overlay |
 | `?` | 打开帮助 overlay |
+| `v` | 进入／退出全屏详情（搜索及输入弹窗内不触发） |
+| `q` / `Esc`（全屏详情） | 返回原焦点；有弹窗（含音量）时先处理弹窗，列表位置保留 |
 | `Tab` / `Shift+Tab` | 切换三栏焦点（仅在可见栏之间循环） |
 
 ### 列焦点导航 (h/l，ranger/yazi 风格)
@@ -364,7 +367,8 @@ Playlist {
 | `l` | 曲目栏 | 焦点移到详情栏 |
 | `l` | 详情栏 | 无操作（已在最右侧） |
 | `Enter` | 歌单栏 | 焦点移到曲目栏 |
-| `Enter` | 曲目栏/详情栏 | 播放选中曲目 |
+| `Enter` | 曲目栏 | 播放选中曲目，多 P 视频行展开／折叠 |
+| `Enter` | 详情栏 | 进入全屏详情 |
 
 ### 播放控制
 
@@ -404,26 +408,49 @@ Playlist {
 | `c` (焦点在歌单栏) | 弹出"创建歌单"输入 popup |
 | `d` (焦点在歌单栏) | 弹出"删除歌单"确认 popup（Queue 行不可删除） |
 
-### 搜索模式 (Search Input)
+### 搜索三态
+
+### INSERT（SearchInput，输入框编辑）
 
 | 按键 | 功能 |
 |------|------|
-| 字符键 | 输入搜索关键词 |
-| `Backspace` | 删除字符 |
-| `Enter` | 执行搜索，切换到 Search Normal |
-| `Esc` | 关闭搜索 overlay |
+| 任意字符 | 在搜索框光标处插入字符 |
+| `Backspace` | 删除光标前一个字符 |
+| `←` / `→`、`Home` / `End` | 移动输入光标、跳到查询首尾 |
+| `Enter` | 提交非空查询，立即聚焦结果列表 |
+| `Esc` | 回到输入框 NORMAL，保留弹窗、查询和结果 |
 
-### 搜索结果浏览 (Search Normal)
+关键词调用搜索接口；BV 号或 B 站链接直接获取一个视频结果，随后可选择播放或添加。空白查询不会提交。
+
+### NORMAL（SearchNormal，输入框导航）
 
 | 按键 | 功能 |
 |------|------|
-| `j` / `↓` | 下移光标 |
-| `k` / `↑` | 上移光标 |
-| `Enter` | 将选中结果加入队列并播放 |
-| `a` | 将选中结果加入队列（不自动播放，去重）/ 回到 Search Input（光标置尾） |
-| `A` (`Shift+A`) | 弹出"添加到歌单"选择 popup |
-| `i` | 回到 Search Input 模式（光标置首） |
-| `Esc` / `q` | 关闭搜索 overlay |
+| `i` / `/` | 进入 INSERT，光标保持原位 |
+| `a` | 进入 INSERT，光标向后移动一字符（至多到末尾） |
+| `h` / `l`、`←` / `→` | 移动输入光标 |
+| `g` / `Home`、`G` / `End` | 跳到查询首尾 |
+| `j` / `↓` / `Tab` | 有结果时聚焦结果列表首项 |
+| `Enter` | 重新提交查询并聚焦结果列表 |
+| `Esc` / `q` | 关闭搜索弹窗 |
+
+### RESULTS（SearchResults，结果浏览）
+
+| 按键 | 功能 |
+|------|------|
+| `j` / `↓`、`k` / `↑` | 结果光标下移 / 上移；首项向上回到输入框 NORMAL |
+| `J` / `K`、`PgDn` / `PgUp` | 下移 / 上移 10 项 |
+| `g` / `Home`、`G` / `End` | 跳到结果首尾 |
+| `i` / `/` | 回到输入框 INSERT 编辑查询 |
+| `Enter` | 播放选中结果（自动加入队列） |
+| `a` | 把选中结果加入队列 |
+| `A`（Shift+A） | 把选中结果加入指定歌单 |
+| `Esc` / `Tab` / `Shift+Tab` | 回到输入框 NORMAL，保留查询和结果 |
+| `q` | 直接关闭搜索弹窗 |
+
+没有结果或请求失败时，若仍聚焦结果列表，则回到输入框 NORMAL。等待期间按 `Esc` 或 `i` 切回输入框后，响应不会改变当前模式；关闭弹窗会丢弃未完成的响应。
+
+---
 
 ### Popup 键位
 
@@ -539,7 +566,7 @@ Playlist {
 - Header: app 名称 + 登录状态
 - Status: 进度条 + 时间 + 音量数值
 - 搜索 overlay (`/` 触发，居中 popup)
-- 帮助 overlay (`?` 触发，全屏)
+- 帮助 overlay (`?` 触发，居中可滚动)
 - 音量滑钮 overlay (调音量时弹出，自动消失)
 - 窄终端自适应
 - 播放控制 (暂停/继续/上下曲/seek/音量/静音)

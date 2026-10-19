@@ -11,7 +11,7 @@ pub fn key_to_command(
     popup_stack: &[PopupLayer],
     _search_results_len: usize,
 ) -> Command {
-    // If Help popup is active, only Esc/? close it
+    // Help consumes navigation and close keys before the underlying view.
     if popup_stack.contains(&PopupLayer::Help) {
         return help_mode_keys(key);
     }
@@ -50,6 +50,12 @@ pub fn key_to_command(
 fn help_mode_keys(key: KeyEvent) -> Command {
     match key.code {
         KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => Command::CloseHelp,
+        KeyCode::Char('j') | KeyCode::Down => Command::HelpScroll(1),
+        KeyCode::Char('k') | KeyCode::Up => Command::HelpScroll(-1),
+        KeyCode::PageDown => Command::HelpPage(1),
+        KeyCode::PageUp => Command::HelpPage(-1),
+        KeyCode::Home | KeyCode::Char('g') => Command::HelpTop,
+        KeyCode::End | KeyCode::Char('G') => Command::HelpBottom,
         _ => Command::Noop,
     }
 }
@@ -163,6 +169,8 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         (KeyModifiers::NONE, KeyCode::Tab) => Command::FocusNext,
         (KeyModifiers::SHIFT, KeyCode::BackTab) => Command::FocusPrev,
 
+        (KeyModifiers::NONE, KeyCode::Char('v')) => Command::ToggleDetailFullscreen,
+
         // Playback
         (KeyModifiers::NONE, KeyCode::Char(' ')) => Command::TogglePause,
         (KeyModifiers::NONE, KeyCode::Char('n')) => Command::NextTrack,
@@ -229,7 +237,8 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         // Actions
         (KeyModifiers::NONE, KeyCode::Enter) => match focus {
             FocusColumn::Playlist => Command::FocusTrackListColumn,
-            _ => Command::PlaySelected,
+            FocusColumn::Detail => Command::ToggleDetailFullscreen,
+            FocusColumn::TrackList => Command::PlaySelected,
         },
         // Expand / collapse the parts (分P) of the track under the cursor.
         // Enter already does this for multi-part rows in the queue view, but a
@@ -240,6 +249,8 @@ fn normal_mode_keys(key: KeyEvent, focus: FocusColumn) -> Command {
         },
         (KeyModifiers::NONE, KeyCode::Char('a')) => Command::AddToQueue,
         (KeyModifiers::SHIFT, KeyCode::Char('A')) => Command::AddToPlaylistOpen,
+        (_, KeyCode::Char('I')) if focus == FocusColumn::Playlist => Command::ImportFavorites,
+        (_, KeyCode::Esc) => Command::CancelPending,
         (KeyModifiers::NONE, KeyCode::Char('c')) => match focus {
             FocusColumn::Playlist => Command::CreatePlaylist,
             _ => Command::Noop,

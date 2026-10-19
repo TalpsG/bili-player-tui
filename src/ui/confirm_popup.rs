@@ -8,7 +8,7 @@ use crate::app::App;
 
 /// Draw the "Delete Playlist" confirmation popup.
 pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
-    let width = 52u16.min(screen.width);
+    let width = 52u16;
     let height = 5u16;
 
     let area = super::popup::popup_area(screen, super::popup::Anchor::Center, width, height);

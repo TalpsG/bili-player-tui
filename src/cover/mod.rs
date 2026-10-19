@@ -56,6 +56,7 @@ enum CoverState {
     Ready {
         proto: Box<dyn StatefulProtocol>,
         img: DynamicImage,
+        prepared_size: Option<(u16, u16, u32, u32)>,
     },
     /// Download/decode still in progress.
     Loading,
@@ -77,7 +78,8 @@ pub struct CoverManager {
 }
 
 impl CoverManager {
-    pub fn new(picker: Picker) -> Self {
+    pub fn new(mut picker: Picker) -> Self {
+        picker.font_size = (picker.font_size.0.max(1), picker.font_size.1.max(1));
         // Try to set up disk cache; if config_dir fails, run without it.
         let disk_cache = Config::config_dir()
             .ok()
@@ -99,6 +101,9 @@ impl CoverManager {
     ///
     /// A background download is spawned automatically on first call for a URL.
     pub fn render_cover(&mut self, url: &str, area: Rect, f: &mut ratatui::Frame) -> bool {
+        if area.is_empty() {
+            return false;
+        }
         // Phase 1: ensure a download is in flight (lock, check, maybe insert + spawn).
         {
             let mut cache = self.cache.lock().unwrap();
@@ -113,7 +118,14 @@ impl CoverManager {
                         Ok(img) => {
                             let proto = picker.new_resize_protocol(img.clone());
                             let mut c = cache2.lock().unwrap();
-                            c.put(url_owned, CoverState::Ready { proto, img });
+                            c.put(
+                                url_owned,
+                                CoverState::Ready {
+                                    proto,
+                                    img,
+                                    prepared_size: None,
+                                },
+                            );
                         }
                         Err(e) => {
                             eprintln!("Cover download failed: {e}");
@@ -128,9 +140,26 @@ impl CoverManager {
 
         // Phase 2: if ready, render while holding the lock.
         let mut cache = self.cache.lock().unwrap();
-        if let Some(CoverState::Ready { proto, .. }) = cache.get_mut(url) {
-            let image = StatefulImage::new(None).resize(Resize::Fit(None));
-            f.render_stateful_widget(image, area, proto);
+        if let Some(CoverState::Ready {
+            proto,
+            img,
+            prepared_size,
+        }) = cache.get_mut(url)
+        {
+            let geometry = contain_geometry(img.width(), img.height(), self.picker.font_size, area);
+            let Some((target, pixels)) = geometry else {
+                return false;
+            };
+            let size = (target.width, target.height);
+            let key = (size.0, size.1, pixels.0, pixels.1);
+            if *prepared_size != Some(key) {
+                let canvas = prepare_image(img, pixels, self.picker.font_size, size);
+                *proto = self.picker.new_resize_protocol(canvas);
+                *prepared_size = Some(key);
+            }
+            // The prepared canvas is already cell-aligned. Crop performs no rescaling.
+            let image = StatefulImage::new(None).resize(Resize::Crop(None));
+            f.render_stateful_widget(image, target, proto);
             true
         } else {
             false
@@ -154,7 +183,14 @@ impl CoverManager {
                 Ok(img) => {
                     let proto = picker.new_resize_protocol(img.clone());
                     let mut c = cache2.lock().unwrap();
-                    c.put(url_owned, CoverState::Ready { proto, img });
+                    c.put(
+                        url_owned,
+                        CoverState::Ready {
+                            proto,
+                            img,
+                            prepared_size: None,
+                        },
+                    );
                 }
                 Err(e) => {
                     eprintln!("Cover prewarm failed: {e}");
@@ -173,8 +209,14 @@ impl CoverManager {
         let mut cache = self.cache.lock().unwrap();
         let mut picker = self.picker;
         for (_, state) in cache.iter_mut() {
-            if let CoverState::Ready { proto, img } = state {
+            if let CoverState::Ready {
+                proto,
+                img,
+                prepared_size,
+            } = state
+            {
                 *proto = picker.new_resize_protocol(img.clone());
+                *prepared_size = None;
             }
         }
     }
@@ -237,5 +279,129 @@ fn normalize_url(url: &str) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Owned(format!("https:{url}"))
     } else {
         std::borrow::Cow::Borrowed(url)
+    }
+}
+
+/// Fit in physical pixels, including upscaling; center the cell rectangle and
+/// the sub-cell padding independently. Cap axes because ratatui-image 1.x
+/// multiplies its cell counts and font dimensions as u16 internally.
+fn contain_geometry(w: u32, h: u32, cell: (u16, u16), area: Rect) -> Option<(Rect, (u32, u32))> {
+    if w == 0 || h == 0 || area.is_empty() {
+        return None;
+    }
+    let cw = cell.0.max(1);
+    let ch = cell.1.max(1);
+    let cols = area.width.min(u16::MAX / cw);
+    let rows = area.height.min(u16::MAX / ch);
+    if cols == 0 || rows == 0 {
+        return None;
+    }
+    let pw = u64::from(cols) * u64::from(cw);
+    let ph = u64::from(rows) * u64::from(ch);
+    let (iw, ih) = if pw * u64::from(h) <= ph * u64::from(w) {
+        (pw, (pw * u64::from(h) / u64::from(w)).max(1))
+    } else {
+        ((ph * u64::from(w) / u64::from(h)).max(1), ph)
+    };
+    let width = iw.div_ceil(u64::from(cw)) as u16;
+    let height = ih.div_ceil(u64::from(ch)) as u16;
+    Some((
+        Rect::new(
+            area.x.saturating_add((area.width - width) / 2),
+            area.y.saturating_add((area.height - height) / 2),
+            width,
+            height,
+        ),
+        (iw as u32, ih as u32),
+    ))
+}
+
+fn prepare_image(
+    img: &DynamicImage,
+    pixels: (u32, u32),
+    cell: (u16, u16),
+    size: (u16, u16),
+) -> DynamicImage {
+    let width = u32::from(size.0) * u32::from(cell.0.max(1));
+    let height = u32::from(size.1) * u32::from(cell.1.max(1));
+    let resized = img.resize_exact(pixels.0, pixels.1, image::imageops::FilterType::Lanczos3);
+    let mut canvas = DynamicImage::new_rgb8(width, height);
+    image::imageops::overlay(
+        &mut canvas,
+        &resized,
+        i64::from((width - pixels.0) / 2),
+        i64::from((height - pixels.1) / 2),
+    );
+    canvas
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn contain_varied_aspects_and_cells() {
+        for (w, h) in [(160, 90), (90, 160), (100, 100), (2, 1)] {
+            for cell in [(8, 16), (10, 13), (1, 1)] {
+                for area in [Rect::new(3, 5, 80, 24), Rect::new(0, 0, 1, 1)] {
+                    let (r, (pw, ph)) = contain_geometry(w, h, cell, area).unwrap();
+                    assert!(r.right() <= area.right() && r.bottom() <= area.bottom());
+                    assert!(
+                        (i32::from(r.x - area.x) * 2 - i32::from(area.width - r.width)).abs() <= 1
+                    );
+                    assert!(
+                        (i32::from(r.y - area.y) * 2 - i32::from(area.height - r.height)).abs()
+                            <= 1
+                    );
+                    assert!(pw <= u32::from(r.width) * u32::from(cell.0));
+                    assert!(ph <= u32::from(r.height) * u32::from(cell.1));
+                    let canvas = prepare_image(
+                        &DynamicImage::new_rgb8(w, h),
+                        (pw, ph),
+                        cell,
+                        (r.width, r.height),
+                    );
+                    assert_eq!(
+                        (canvas.width(), canvas.height()),
+                        (
+                            u32::from(r.width) * u32::from(cell.0),
+                            u32::from(r.height) * u32::from(cell.1)
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn output_content_is_centered_and_keeps_aspect() {
+        use image::{GenericImageView, Rgb, RgbImage};
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(7, 13, Rgb([255, 255, 255])));
+        let (area, pixels) = contain_geometry(7, 13, (10, 13), Rect::new(0, 0, 21, 9)).unwrap();
+        let canvas = prepare_image(&img, pixels, (10, 13), (area.width, area.height));
+        let white: Vec<_> = canvas.pixels().filter(|(_, _, c)| c.0[0] == 255).collect();
+        let min_x = white.iter().map(|p| p.0).min().unwrap();
+        let max_x = white.iter().map(|p| p.0).max().unwrap();
+        let min_y = white.iter().map(|p| p.1).min().unwrap();
+        let max_y = white.iter().map(|p| p.1).max().unwrap();
+        assert_eq!((max_x - min_x + 1, max_y - min_y + 1), pixels);
+        assert!(min_x.abs_diff(canvas.width() - max_x - 1) <= 1);
+        assert!(min_y.abs_diff(canvas.height() - max_y - 1) <= 1);
+        assert!((i64::from(pixels.0) * 13 - i64::from(pixels.1) * 7).abs() <= 13);
+    }
+
+    #[test]
+    fn small_images_upscale_and_empty_is_safe() {
+        let (_, pixels) = contain_geometry(2, 1, (10, 13), Rect::new(0, 0, 80, 24)).unwrap();
+        assert_eq!(pixels, (624, 312));
+        assert!(contain_geometry(2, 1, (8, 16), Rect::default()).is_none());
+        let (r, _) = contain_geometry(
+            u32::MAX,
+            u32::MAX,
+            (u16::MAX, u16::MAX),
+            Rect::new(0, 0, u16::MAX, u16::MAX),
+        )
+        .unwrap();
+        assert_eq!((r.width, r.height), (1, 1));
     }
 }

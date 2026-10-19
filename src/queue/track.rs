@@ -48,7 +48,18 @@ impl Track {
     ///
     /// Two parts of one video are distinct tracks, so `bvid` alone is not enough.
     pub fn same_item(&self, other: &Track) -> bool {
-        self.bvid == other.bvid && self.cid == other.cid
+        self.bvid == other.bvid
+            && match (self.page, other.page) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    if self.cid != 0 && other.cid != 0 {
+                        self.cid == other.cid
+                    } else {
+                        a == b
+                    }
+                }
+                _ => false,
+            }
     }
 }
 

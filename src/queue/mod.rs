@@ -1,3 +1,4 @@
+pub(crate) mod plan;
 pub mod track;
 
 use rand::seq::SliceRandom;
@@ -26,13 +27,23 @@ impl PlayMode {
         }
     }
 
-    /// Status bar icon. Empty string for Sequential.
+    /// Standard media-control emoji for the status bar.
     pub fn icon(self) -> &'static str {
         match self {
-            Self::Sequential => "",
+            Self::Sequential => "▶️",
             Self::RepeatList => "🔁",
             Self::RepeatOne => "🔂",
             Self::Shuffle => "🔀",
+        }
+    }
+
+    /// Full mode name describing its playback behavior.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sequential => "Sequential",
+            Self::RepeatList => "Repeat list",
+            Self::RepeatOne => "Repeat one",
+            Self::Shuffle => "Shuffle",
         }
     }
 }
@@ -530,11 +541,23 @@ mod tests {
     }
 
     #[test]
-    fn test_play_mode_icons() {
-        assert_eq!(PlayMode::Sequential.icon(), "");
-        assert_eq!(PlayMode::RepeatList.icon(), "🔁");
-        assert_eq!(PlayMode::RepeatOne.icon(), "🔂");
-        assert_eq!(PlayMode::Shuffle.icon(), "🔀");
+    fn test_play_mode_icons_and_names() {
+        for (mode, icon, name) in [
+            (PlayMode::Sequential, "▶️", "Sequential"),
+            (PlayMode::RepeatList, "🔁", "Repeat list"),
+            (PlayMode::RepeatOne, "🔂", "Repeat one"),
+            (PlayMode::Shuffle, "🔀", "Shuffle"),
+        ] {
+            assert_eq!(mode.icon(), icon);
+            assert_eq!(mode.name(), name);
+            if mode == PlayMode::Sequential {
+                assert_eq!(
+                    mode.icon().chars().collect::<Vec<_>>(),
+                    ['\u{25b6}', '\u{fe0f}']
+                );
+            }
+            assert_eq!(unicode_width::UnicodeWidthStr::width(mode.icon()), 2);
+        }
     }
 
     #[test]

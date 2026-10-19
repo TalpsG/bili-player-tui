@@ -10,7 +10,26 @@ use crate::queue::track::{AudioQuality, Track};
 
 /// Draw the right column: now-playing detail (B-style: cover placeholder + centered metadata).
 pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, area: Rect) {
-    if area.width == 0 {
+    draw_detail(f, app, cover_manager, area, false);
+}
+
+pub fn draw_fullscreen(
+    f: &mut Frame,
+    app: &App,
+    cover_manager: &mut Option<CoverManager>,
+    area: Rect,
+) {
+    draw_detail(f, app, cover_manager, area, true);
+}
+
+fn draw_detail(
+    f: &mut Frame,
+    app: &App,
+    cover_manager: &mut Option<CoverManager>,
+    area: Rect,
+    fullscreen: bool,
+) {
+    if area.is_empty() {
         return;
     }
 
@@ -33,7 +52,7 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height < 4 || inner.width < 4 {
+    if inner.is_empty() {
         return;
     }
 
@@ -48,7 +67,21 @@ pub fn draw(f: &mut Frame, app: &App, cover_manager: &mut Option<CoverManager>, 
 
     match displayed_track {
         None => draw_empty(f, inner),
-        Some(track) => draw_track(f, inner, track, cover_manager, cover_suppressed),
+        Some(track) => {
+            let mut displayed = track.clone();
+            if displayed.page.is_some() && !app.has_visible_part(track) {
+                displayed.part = None;
+                displayed.page = None;
+            }
+            draw_track(
+                f,
+                inner,
+                &displayed,
+                cover_manager,
+                cover_suppressed,
+                fullscreen,
+            );
+        }
     }
 }
 
@@ -89,62 +122,46 @@ fn draw_track(
     track: &Track,
     cover_manager: &mut Option<CoverManager>,
     cover_suppressed: bool,
+    fullscreen: bool,
 ) {
-    // Text lines: title + author + meta + bvid = 4 (no blank line),
-    // plus one more line naming the part when showing a 分P.
-    let text_lines: u16 = if track.part.is_some() { 5 } else { 4 };
-
-    // Bilibili covers are 16:9.  Terminal monospace chars are roughly 1:2
-    // (pixel width : pixel height), so a 16:9 image fills a character area
-    // whose aspect ratio is:  cols / rows = (16/9) * (px_h / px_w) = 16/9 * 2 = 32/9.
-    // Therefore: cover_h = cover_w * 9 / 32  →  no letterbox, no blank rows.
-    // Use the full inner width so the cover looks as large as possible.
-    let cover_w = area.width;
-    let max_cover_h = area.height.saturating_sub(text_lines);
-    let cover_h = (cover_w * 9 / 32).max(4).min(max_cover_h);
-
-    // Total block = cover + text (no gap — cover sits directly above text).
-    let block_h = cover_h.saturating_add(text_lines);
-
-    // Vertically centre the whole block.
-    let v_offset = area.height.saturating_sub(block_h) / 2;
-    let block_top = area.y + v_offset;
-
-    let cover_area = Rect {
-        x: area.x,
-        y: block_top,
-        width: cover_w,
-        height: cover_h,
-    };
-
-    // Try to render the actual cover image; fall back to ASCII placeholder.
-    // Skip the image entirely during the debounce window (cover_suppressed=true)
-    // so rapid j/k keystrokes don't cause expensive pixel-data transmissions.
-    let cover_rendered = if cover_suppressed {
-        false
-    } else {
-        match (cover_manager, &track.cover_url) {
-            (Some(mgr), Some(url)) => mgr.render_cover(url, cover_area, f),
-            _ => false,
+    let (cover_area, text_area) = detail_areas(area, track.part.is_some(), fullscreen);
+    if !cover_area.is_empty() {
+        let rendered = !cover_suppressed
+            && match (cover_manager, &track.cover_url) {
+                (Some(mgr), Some(url)) => mgr.render_cover(url, cover_area, f),
+                _ => false,
+            };
+        if !rendered {
+            draw_cover_placeholder(f, cover_area);
         }
-    };
-    if !cover_rendered {
-        draw_cover_placeholder(f, cover_area);
     }
-
-    // Text sub-area: immediately below the cover, no gap.
-    let text_y = block_top + cover_h;
-    if text_y >= area.y + area.height {
-        return;
-    }
-    let text_area = Rect {
-        x: area.x,
-        y: text_y,
-        width: area.width,
-        height: (area.y + area.height).saturating_sub(text_y),
-    };
-
     draw_track_info(f, text_area, track);
+}
+
+/// Reserve metadata before assigning remaining rows to artwork.
+fn detail_areas(area: Rect, has_part: bool, fullscreen: bool) -> (Rect, Rect) {
+    let metadata = if has_part { 5 } else { 4 };
+    if fullscreen && area.width >= 90 && area.height >= 12 {
+        let cover_width = (u32::from(area.width) * 3 / 5) as u16;
+        let text = Rect::new(
+            area.x.saturating_add(cover_width).saturating_add(2),
+            area.y,
+            area.width.saturating_sub(cover_width + 2),
+            area.height,
+        );
+        return (Rect::new(area.x, area.y, cover_width, area.height), text);
+    }
+    let text_height = area.height.min(metadata + 2);
+    let cover_height = area.height.saturating_sub(text_height);
+    (
+        Rect::new(area.x, area.y, area.width, cover_height),
+        Rect::new(
+            area.x,
+            area.y.saturating_add(cover_height),
+            area.width,
+            text_height,
+        ),
+    )
 }
 
 /// ASCII box placeholder for the cover image area.
@@ -243,12 +260,35 @@ fn draw_track_info(f: &mut Frame, area: Rect, track: &Track) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    f.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    // Render each field separately so a long wrapped title cannot consume
+    // the author, part, duration, or BV rows.
+    if area.is_empty() {
+        return;
+    }
+    let fields = lines.len() as u16;
+    let title_height = area
+        .height
+        .saturating_sub(fields.saturating_sub(1))
+        .clamp(1, 3)
+        .min(area.height);
+    let used = title_height
+        .saturating_add(fields.saturating_sub(1))
+        .min(area.height);
+    let mut y = area.y.saturating_add(area.height.saturating_sub(used) / 2);
+    for (index, line) in lines.into_iter().enumerate() {
+        let height = if index == 0 { title_height } else { 1 };
+        if y >= area.bottom() {
+            break;
+        }
+        let row = Rect::new(area.x, y, area.width, height.min(area.bottom() - y));
+        f.render_widget(
+            Paragraph::new(line)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            row,
+        );
+        y = y.saturating_add(height);
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -262,5 +302,24 @@ fn format_quality(q: &AudioQuality) -> &'static str {
         AudioQuality::Dash { bitrate: 30216 } => "64k",
         AudioQuality::Dash { .. } => "AAC",
         AudioQuality::LegacyMp4 => "MP4",
+    }
+}
+
+#[cfg(test)]
+mod responsive_tests {
+    use super::*;
+
+    #[test]
+    fn details_reserve_metadata_and_switch_orientation() {
+        for has_part in [false, true] {
+            let (cover, text) = detail_areas(Rect::new(2, 3, 40, 20), has_part, false);
+            assert_eq!(cover.bottom(), text.y);
+            assert!(text.height >= if has_part { 5 } else { 4 });
+            let (cover, text) = detail_areas(Rect::new(2, 3, 100, 20), has_part, true);
+            assert!(cover.right() < text.x);
+            let (cover, text) = detail_areas(Rect::new(0, 0, 20, 3), has_part, true);
+            assert_eq!(cover.height, 0);
+            assert_eq!(text.height, 3);
+        }
     }
 }

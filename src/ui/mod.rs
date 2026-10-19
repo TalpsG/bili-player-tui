@@ -4,6 +4,7 @@ pub mod controls;
 pub mod help_view;
 pub mod input_popup;
 pub mod layout;
+pub mod marquee;
 pub mod now_playing;
 pub mod playlist_view;
 pub mod popup;
@@ -28,6 +29,7 @@ pub struct Ui {
     pub track_list_cursor: usize,
     pub track_list_scroll: usize,
     pub search_cursor: usize,
+    pub search_marquee: marquee::Marquee,
     pub playlist_list_state: ratatui::widgets::ListState,
 }
 
@@ -38,6 +40,7 @@ impl Ui {
             track_list_cursor: 0,
             track_list_scroll: 0,
             search_cursor: 0,
+            search_marquee: marquee::Marquee::default(),
             playlist_list_state: ratatui::widgets::ListState::default(),
         }
     }
@@ -54,9 +57,9 @@ pub fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     use unicode_width::UnicodeWidthStr;
     let left = " bili-player-cli";
     let right = if app.logged_in {
-        "已登录"
+        "Logged in"
     } else {
-        "未登录"
+        "Not logged in"
     };
 
     let left_width = left.width();
@@ -102,16 +105,9 @@ pub fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let vol_icon = if app.muted { "🔇" } else { "🔊" };
     let status_text = match &app.status_message {
         Some(msg) => msg.clone(),
-        None => {
-            let mode_icon = app.queue.play_mode.icon();
-            if mode_icon.is_empty() {
-                format!("{vol_icon}{}", app.volume)
-            } else {
-                format!("{mode_icon} {vol_icon}{}", app.volume)
-            }
-        }
+        None => format!("{} {vol_icon}{}", app.queue.play_mode.icon(), app.volume),
     };
-    // Right-align status_text, accounting for wide characters (emoji = 2 cols each).
+    // Right-align status_text, accounting for wide characters.
     let available = chunks[1].width as usize;
     let text_display_width = unicode_width::UnicodeWidthStr::width(status_text.as_str());
     let padding = available.saturating_sub(text_display_width);

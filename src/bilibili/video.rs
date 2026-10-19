@@ -135,7 +135,13 @@ pub async fn get_video_pages(
         });
     }
 
-    Ok(resp.data.unwrap_or_default())
+    let mut pages = resp.data.unwrap_or_default();
+    if pages.is_empty() || pages.iter().any(|p| p.cid == 0 || p.page == 0) {
+        return Err(BilibiliError::Parse("Video has no valid parts".into()));
+    }
+    pages.sort_by_key(|p| p.page);
+    pages.dedup_by_key(|p| p.page);
+    Ok(pages)
 }
 
 #[cfg(test)]
