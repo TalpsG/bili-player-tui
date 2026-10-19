@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,10 @@ impl PlaylistStore {
 
     /// Load from disk.  If the file does not exist, return an empty store (not an error).
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::storage_path()?;
+        Self::load_from(&Self::storage_path()?)
+    }
+
+    pub(crate) fn load_from(path: &Path) -> anyhow::Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -33,14 +36,11 @@ impl PlaylistStore {
 
     /// Persist to disk.  Creates the config directory if absent.
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::storage_path()?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating dir {}", dir.display()))?;
-        }
-        let data = serde_json::to_string_pretty(self).context("serializing playlists")?;
-        std::fs::write(&path, data).with_context(|| format!("writing {}", path.display()))?;
-        Ok(())
+        self.save_to(&Self::storage_path()?)
+    }
+
+    pub(crate) fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        crate::state::save_json_atomic(path, self)
     }
 }
 

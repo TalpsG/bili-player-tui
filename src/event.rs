@@ -56,7 +56,13 @@ impl From<u32> for EndReason {
 #[derive(Debug)]
 pub enum PlayerEvent {
     /// mpv unloaded the current file, for the given reason.
-    TrackEnded { reason: EndReason },
+    TrackEnded { generation: u64, reason: EndReason },
+    /// A command was accepted by the channel but rejected by mpv.
+    CommandFailed {
+        generation: u64,
+        operation: &'static str,
+        message: String,
+    },
     /// A seek operation completed.
     SeekCompleted,
     /// mpv is shutting down.

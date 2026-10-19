@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::{
@@ -33,6 +34,38 @@ pub enum InputMode {
     Normal,
     SearchInput,
     SearchNormal,
+    SearchResults,
+}
+
+impl InputMode {
+    pub fn search_focus_input(self) -> bool {
+        matches!(self, Self::SearchInput | Self::SearchNormal)
+    }
+
+    /// Escape unwinds one search layer at a time.
+    pub fn search_escape(self) -> Self {
+        match self {
+            Self::SearchInput | Self::SearchResults => Self::SearchNormal,
+            Self::SearchNormal | Self::Normal => Self::Normal,
+        }
+    }
+
+    pub fn search_submitted(self, query: &str) -> Self {
+        if query.trim().is_empty() {
+            self
+        } else {
+            Self::SearchResults
+        }
+    }
+
+    /// An async response must preserve any editing/navigation done since submit.
+    pub fn search_finished(self, has_results: bool) -> Self {
+        if self == Self::SearchResults && !has_results {
+            Self::SearchNormal
+        } else {
+            self
+        }
+    }
 }
 
 /// Which column has keyboard focus.
@@ -163,7 +196,6 @@ pub struct App {
     // Search state
     pub search_query: String,
     pub search_query_cursor: usize,
-    pub search_focus_input: bool,
     pub search_results: Vec<Track>,
     pub search_cursor: usize,
     pub searching: bool,
@@ -231,6 +263,9 @@ pub struct App {
     /// Set to `true` to force `terminal.clear()` before the next draw.
     /// Used by Ctrl+L (manual redraw) and automatic tmux focus-regain handling.
     pub force_redraw: bool,
+
+    /// Enabled by run(); tests can use an isolated directory.
+    persistence_dir: Option<PathBuf>,
 
     /// When `Some`, cover rendering is suppressed until this instant passes.
     /// Set on every cursor movement; expires 100 ms after the last move.
@@ -311,7 +346,6 @@ impl App {
             focus_column: FocusColumn::TrackList,
             search_query: String::new(),
             search_query_cursor: 0,
-            search_focus_input: true,
             search_results: Vec::new(),
             search_cursor: 0,
             searching: false,
@@ -339,6 +373,7 @@ impl App {
             pending_expand: None,
             cover_manager: picker.map(CoverManager::new),
             force_redraw: false,
+            persistence_dir: None,
             cover_render_after: None,
         };
 
@@ -366,6 +401,8 @@ impl App {
 
     /// Run the TUI main loop.
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        self.persistence_dir = Some(Config::config_dir()?);
+
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -419,7 +456,7 @@ impl App {
 
         // Restore queue state from previous session
         match AppState::load() {
-            Ok(state) if !state.queue_tracks.is_empty() => {
+            Ok(state) => {
                 self.queue = Queue::restore(
                     state.queue_tracks,
                     state.queue_current_index,
@@ -430,7 +467,6 @@ impl App {
                     self.ui.track_list_cursor = idx;
                 }
             }
-            Ok(_) => {} // empty state, start fresh
             Err(e) => {
                 // Non-fatal: just log and continue with an empty queue
                 eprintln!("Warning: failed to load state: {e}");
@@ -441,6 +477,10 @@ impl App {
             .run_loop(&mut terminal, &mut key_rx, &mut tick_interval)
             .await;
 
+        // Save before terminal cleanup: cleanup failures must not skip persistence.
+        self.save_queue();
+        self.save_playlists();
+
         // Restore terminal
         disable_raw_mode()?;
         execute!(
@@ -448,30 +488,8 @@ impl App {
             LeaveAlternateScreen,
             DisableFocusChange
         )?;
-
-        // Restore tmux focus-events to whatever it was before we started
         restore_tmux_focus_events(tmux_focus_was_on);
-
         let _ = self.player.shutdown();
-
-        // Persist queue state on clean exit
-        let (queue_tracks, queue_current_index, play_mode) = self.queue.snapshot();
-        let app_state = AppState {
-            queue_tracks,
-            queue_current_index,
-            play_mode,
-        };
-        if let Err(e) = app_state.save() {
-            eprintln!("Warning: failed to save state: {e}");
-        }
-
-        // Persist playlists on clean exit
-        let store = PlaylistStore {
-            playlists: self.playlists.clone(),
-        };
-        if let Err(e) = store.save() {
-            eprintln!("Warning: failed to save playlists: {e}");
-        }
 
         result
     }
@@ -564,6 +582,14 @@ impl App {
     }
 
     fn handle_command(&mut self, cmd: Command) {
+        let previous_queue = self.persistence_dir.as_ref().map(|_| self.queue.snapshot());
+        self.apply_command(cmd);
+        if previous_queue.is_some_and(|previous| previous != self.queue.snapshot()) {
+            self.save_queue();
+        }
+    }
+
+    fn apply_command(&mut self, cmd: Command) {
         match cmd {
             Command::Quit => {
                 self.should_quit = true;
@@ -636,11 +662,11 @@ impl App {
             }
             Command::MoveCursorUp => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if self.search_focus_input {
+                    if self.input_mode.search_focus_input() {
                         // Already at top
                     } else {
                         if self.search_cursor == 0 {
-                            self.search_focus_input = true;
+                            self.input_mode = InputMode::SearchNormal;
                         } else {
                             self.search_cursor -= 1;
                         }
@@ -651,9 +677,9 @@ impl App {
             }
             Command::MoveCursorDown => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if self.search_focus_input {
+                    if self.input_mode.search_focus_input() {
                         if !self.search_results.is_empty() {
-                            self.search_focus_input = false;
+                            self.input_mode = InputMode::SearchResults;
                             self.search_cursor = 0;
                         }
                     } else {
@@ -667,7 +693,7 @@ impl App {
             }
             Command::MoveCursorLeft => {
                 if self.popup_stack.contains(&PopupLayer::Search)
-                    && self.search_focus_input
+                    && self.input_mode.search_focus_input()
                     && self.search_query_cursor > 0
                 {
                     self.search_query_cursor -= 1;
@@ -675,7 +701,7 @@ impl App {
             }
             Command::MoveCursorRight => {
                 if self.popup_stack.contains(&PopupLayer::Search)
-                    && self.search_focus_input
+                    && self.input_mode.search_focus_input()
                     && self.search_query_cursor < self.search_query.chars().count()
                 {
                     self.search_query_cursor += 1;
@@ -698,8 +724,11 @@ impl App {
             }
             Command::MoveCursorTop => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    self.search_focus_input = true;
-                    self.search_cursor = 0;
+                    if self.input_mode.search_focus_input() {
+                        self.search_query_cursor = 0;
+                    } else {
+                        self.search_cursor = 0;
+                    }
                 } else {
                     match self.focus_column {
                         FocusColumn::Playlist => {
@@ -716,8 +745,9 @@ impl App {
             }
             Command::MoveCursorBottom => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if !self.search_results.is_empty() {
-                        self.search_focus_input = false;
+                    if self.input_mode.search_focus_input() {
+                        self.search_query_cursor = self.search_query.chars().count();
+                    } else if !self.search_results.is_empty() {
                         self.search_cursor = self.search_results.len() - 1;
                     }
                 } else {
@@ -745,7 +775,7 @@ impl App {
             }
             Command::PlaySelected => {
                 if self.popup_stack.contains(&PopupLayer::Search) {
-                    if self.search_focus_input {
+                    if self.input_mode.search_focus_input() {
                         // Enter in input field re-submits search
                         self.handle_command(Command::SearchSubmit);
                     } else if !self.search_results.is_empty()
@@ -819,20 +849,26 @@ impl App {
                 self.search_query_cursor = 0;
                 self.search_results.clear();
                 self.search_cursor = 0;
-                self.search_focus_input = true;
                 self.show_popup(PopupLayer::Search);
             }
+            Command::SearchEscape => {
+                self.input_mode = self.input_mode.search_escape();
+                if self.input_mode == InputMode::Normal {
+                    self.handle_command(Command::CloseSearch);
+                }
+            }
             Command::CloseSearch => {
+                self.search_result_rx = None;
+                self.pending_bv_fetch = None;
+                self.searching = false;
                 self.input_mode = InputMode::Normal;
                 self.hide_popup(PopupLayer::Search);
             }
             Command::EnterSearchInput => {
                 self.input_mode = InputMode::SearchInput;
-                self.search_focus_input = true;
             }
             Command::EnterSearchAppend => {
                 self.input_mode = InputMode::SearchInput;
-                self.search_focus_input = true;
                 if self.search_query_cursor < self.search_query.chars().count() {
                     self.search_query_cursor += 1;
                 }
@@ -867,11 +903,18 @@ impl App {
             }
             Command::SearchSubmit => {
                 let query = self.search_query.clone();
-                if !query.is_empty() {
+                if !query.trim().is_empty() {
+                    // A newer submission owns the results, including switching
+                    // between keyword search and direct BV lookup.
+                    self.search_result_rx = None;
+                    self.pending_bv_fetch = None;
+                    self.search_results.clear();
+                    self.search_cursor = 0;
+                    self.input_mode = self.input_mode.search_submitted(&query);
                     // Detect BV ID: bare "BV..." or embedded in a bilibili.com URL
                     let bvid = extract_bvid(&query);
                     if let Some(bvid) = bvid {
-                        // Direct BV playback: fetch video info, then play immediately
+                        // Direct BV lookup: fetch a single selectable result
                         self.searching = true;
                         let client = self.client.clone();
                         let (tx, rx) = mpsc::unbounded_channel();
@@ -927,7 +970,7 @@ impl App {
                         .select(Some(self.playlist_cursor));
                     self.playlist_name_input.clear();
                     self.hide_popup(PopupLayer::PlaylistCreate);
-                    self.save_playlists_async();
+                    self.save_playlists();
                 }
             }
             Command::CreatePlaylistCancel => {
@@ -955,7 +998,7 @@ impl App {
                         .select(Some(self.playlist_cursor));
                     self.hide_popup(PopupLayer::PlaylistDeleteConfirm);
                     self.set_status(format!("Deleted playlist \"{}\"", name));
-                    self.save_playlists_async();
+                    self.save_playlists();
                 }
             }
             Command::DeletePlaylistCancel => {
@@ -1007,7 +1050,7 @@ impl App {
                                 "Added \"{}\" to \"{}\"",
                                 track.title, pl_name
                             ));
-                            self.save_playlists_async();
+                            self.save_playlists();
                         } else {
                             self.set_status(format!(
                                 "\"{}\" already in \"{}\"",
@@ -1038,7 +1081,7 @@ impl App {
                                 self.ui.track_list_cursor = rows.saturating_sub(1);
                             }
                             self.set_status(format!("Removed \"{}\" from playlist", removed.title));
-                            self.save_playlists_async();
+                            self.save_playlists();
                         }
                     }
                 }
@@ -1084,8 +1127,17 @@ impl App {
         if let Some((track, mut rx)) = self.pending_stream.take() {
             match rx.try_recv() {
                 Ok(Ok(source)) => {
+                    // Queue edits can invalidate a request while it resolves.
+                    if !self
+                        .queue
+                        .current_track()
+                        .is_some_and(|current| current.same_item(&track))
+                    {
+                        return;
+                    }
                     let title = track.display_title().to_string();
                     if let Err(e) = self.player.play(&source) {
+                        self.is_playing = false;
                         self.set_status(format!("Playback error: {e}"));
                     } else {
                         // Update source info in the queue
@@ -1095,8 +1147,8 @@ impl App {
                         // Starting playback used to be silent, so a track that
                         // never played was indistinguishable from one that did.
                         self.set_status(format!("Playing: {title}"));
+                        self.is_playing = true;
                     }
-                    self.is_playing = true;
                 }
                 Ok(Err(e)) => {
                     self.set_status(format!("Failed to get audio: {e}"));
@@ -1121,21 +1173,24 @@ impl App {
                     self.searching = false;
                     // Treat the result exactly like a 1-item search result list —
                     // the user chooses what to do next (Enter=play, a=add to queue,
-                    // A=add to playlist, Esc=close).
+                    // A=add to playlist, Esc=return to the query).
                     self.search_results = vec![track];
                     self.search_cursor = 0;
-                    self.search_focus_input = false;
-                    self.input_mode = InputMode::SearchNormal;
+                    self.input_mode = self.input_mode.search_finished(true);
                     self.status_message = None;
                 }
                 Ok(Err(e)) => {
                     self.searching = false;
                     self.set_status(format!("BV fetch failed: {e}"));
-                    self.input_mode = InputMode::SearchInput;
+                    self.input_mode = self.input_mode.search_finished(false);
                 }
-                Err(_) => {
-                    // Still pending
+                Err(mpsc::error::TryRecvError::Empty) => {
                     self.pending_bv_fetch = Some(rx);
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.searching = false;
+                    self.input_mode = self.input_mode.search_finished(false);
+                    self.set_status("BV fetch failed: no response".to_string());
                 }
             }
         }
@@ -1149,22 +1204,23 @@ impl App {
                         Ok(tracks) => {
                             self.search_results = tracks;
                             self.search_cursor = 0;
-                            // Search successful, enter Normal mode for selection
-                            self.input_mode = InputMode::SearchNormal;
-                            // If results exist, move focus to results by default
-                            if !self.search_results.is_empty() {
-                                self.search_focus_input = false;
-                            }
+                            self.input_mode = self
+                                .input_mode
+                                .search_finished(!self.search_results.is_empty());
                         }
                         Err(e) => {
                             self.set_status(format!("Search failed: {e}"));
-                            // Keep in Input mode on failure
-                            self.input_mode = InputMode::SearchInput;
+                            self.input_mode = self.input_mode.search_finished(false);
                         }
                     }
                 }
-                Err(_) => {
+                Err(mpsc::error::TryRecvError::Empty) => {
                     self.search_result_rx = Some(rx);
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.searching = false;
+                    self.input_mode = self.input_mode.search_finished(false);
+                    self.set_status("Search failed: no response".to_string());
                 }
             }
         }
@@ -1220,9 +1276,18 @@ impl App {
     }
 
     fn handle_player_event(&mut self, event: PlayerEvent) {
+        let previous_queue = self.persistence_dir.as_ref().map(|_| self.queue.snapshot());
         match event {
-            PlayerEvent::TrackEnded { reason } => match reason {
+            PlayerEvent::TrackEnded { generation, .. }
+            | PlayerEvent::CommandFailed { generation, .. }
+                if generation != self.player.generation() => {}
+            PlayerEvent::TrackEnded { reason, .. } => match reason {
                 EndReason::Eof => {
+                    // A manually selected replacement is already resolving.
+                    // This EOF belongs to the outgoing track, not the new index.
+                    if self.pending_stream.is_some() {
+                        return;
+                    }
                     if let Some(track) = self.queue.advance() {
                         let track = track.clone();
                         self.play_track(track);
@@ -1243,10 +1308,19 @@ impl App {
                     self.is_playing = false;
                 }
             },
+            PlayerEvent::CommandFailed {
+                operation, message, ..
+            } => {
+                self.set_status(format!("Playback error ({operation}): {message}"));
+                self.is_playing = false;
+            }
             PlayerEvent::SeekCompleted => {}
             PlayerEvent::Shutdown => {
                 self.should_quit = true;
             }
+        }
+        if previous_queue.is_some_and(|previous| previous != self.queue.snapshot()) {
+            self.save_queue();
         }
     }
 
@@ -1748,15 +1822,33 @@ impl App {
         }
     }
 
-    fn save_playlists_async(&mut self) {
+    fn save_queue(&mut self) {
+        let Some(dir) = &self.persistence_dir else {
+            return;
+        };
+        let (queue_tracks, queue_current_index, play_mode) = self.queue.snapshot();
+        let state = AppState {
+            queue_tracks,
+            queue_current_index,
+            play_mode,
+        };
+        if let Err(e) = state.save_to(&dir.join("state.json")) {
+            eprintln!("Failed to save queue: {e}");
+            self.set_status(format!("Failed to save queue: {e}"));
+        }
+    }
+
+    fn save_playlists(&mut self) {
+        let Some(dir) = &self.persistence_dir else {
+            return;
+        };
         let store = PlaylistStore {
             playlists: self.playlists.clone(),
         };
-        tokio::spawn(async move {
-            if let Err(e) = store.save() {
-                eprintln!("Failed to save playlists: {e}");
-            }
-        });
+        if let Err(e) = store.save_to(&dir.join("playlists.json")) {
+            eprintln!("Failed to save playlists: {e}");
+            self.set_status(format!("Failed to save playlists: {e}"));
+        }
     }
 
     /// `a` in the middle column: queue whatever the cursor is on.
@@ -1951,6 +2043,98 @@ mod tests {
 
     fn test_app() -> App {
         App::new_with_playlists(Config::default(), None, Vec::new()).unwrap()
+    }
+
+    // Seed an existing on-disk queue, issue the same delete command as the UI,
+    // then reload without run() or its exit handler (as after closing a terminal).
+    #[test]
+    fn deleted_parts_stay_deleted_without_clean_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.persistence_dir = Some(dir.path().to_path_buf());
+        app.focus_column = FocusColumn::TrackList;
+        for page in 1..=3 {
+            let mut part = track("BVparts");
+            part.cid = 1000 + page as u64;
+            part.page = Some(page);
+            part.part = Some(format!("P{page}"));
+            app.queue.push(part);
+        }
+        app.queue.push(track("BVkeep"));
+        app.save_queue();
+        // The virtual group header occupies row 0; P2 occupies row 2.
+        app.ui.track_list_cursor = 2;
+        app.handle_command(Command::RemoveFromQueue);
+        let state = AppState::load_from(&dir.path().join("state.json")).unwrap();
+        assert_eq!(
+            state.queue_tracks.iter().map(|t| t.cid).collect::<Vec<_>>(),
+            vec![1001, 1003, 12345]
+        );
+        assert_eq!(state.queue_tracks[1].page, Some(3));
+        assert_eq!(state.queue_tracks[2].bvid, "BVkeep");
+
+        // Delete everything, including the final part: an empty snapshot must
+        // replace the old non-empty file rather than leave it for next launch.
+        while !app.queue.is_empty() {
+            app.ui.track_list_cursor = app
+                .visible_rows()
+                .iter()
+                .position(|r| matches!(r, TrackRow::Video(_)))
+                .unwrap();
+            app.handle_command(Command::RemoveFromQueue);
+        }
+        let state = AppState::load_from(&dir.path().join("state.json")).unwrap();
+        let restored = Queue::restore(
+            state.queue_tracks,
+            state.queue_current_index,
+            state.play_mode,
+        );
+        assert!(restored.is_empty());
+        assert_eq!(restored.current_index(), None);
+    }
+
+    #[tokio::test]
+    async fn consecutive_playlist_deletions_are_saved_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.persistence_dir = Some(dir.path().to_path_buf());
+        app.focus_column = FocusColumn::TrackList;
+        app.playlist_cursor = 1;
+        let mut playlist = Playlist::new("parts");
+        for page in 1..=2 {
+            let mut part = track("BVparts");
+            part.cid = 1000 + page as u64;
+            part.page = Some(page);
+            playlist.add_track(part);
+        }
+        app.playlists.push(playlist);
+        app.save_playlists();
+        app.ui.track_list_cursor = 1; // first part, below its group header
+        app.handle_command(Command::RemoveFromQueue); // routes to playlist deletion
+        app.ui.track_list_cursor = 1;
+        app.handle_command(Command::RemoveFromPlaylist);
+        // Let any accidentally detached old snapshot writers run before reading.
+        tokio::task::yield_now().await;
+        let store = PlaylistStore::load_from(&dir.path().join("playlists.json")).unwrap();
+        assert!(store.playlists[0].tracks.is_empty());
+    }
+
+    #[test]
+    fn queue_save_failure_is_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, "blocked").unwrap();
+        let mut app = test_app();
+        app.persistence_dir = Some(blocked);
+        app.focus_column = FocusColumn::TrackList;
+        app.queue.push(track("BVdelete"));
+        app.handle_command(Command::RemoveFromQueue);
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Failed to save queue:")
+        );
     }
 
     fn track(bvid: &str) -> Track {
@@ -2256,6 +2440,94 @@ mod tests {
     }
 
     #[test]
+    fn outgoing_eof_does_not_skip_a_resolving_selection() {
+        let mut app = test_app();
+        for name in ["A", "B", "C"] {
+            app.queue.push(track(name));
+        }
+        app.queue.jump_to(1);
+        let (_tx, rx) = mpsc::unbounded_channel();
+        app.pending_stream = Some((app.queue.current_track().unwrap().clone(), rx));
+        app.handle_player_event(PlayerEvent::TrackEnded {
+            generation: 0,
+            reason: EndReason::Eof,
+        });
+        assert_eq!(app.queue.current_index(), Some(1));
+        assert!(
+            app.pending_stream
+                .as_ref()
+                .unwrap()
+                .0
+                .same_item(app.queue.current_track().unwrap())
+        );
+    }
+
+    #[test]
+    fn deleted_track_resolution_does_not_play_or_update_its_successor() {
+        use crate::queue::track::{AudioQuality, TrackSource};
+        let mut app = test_app();
+        app.queue.push(track("A"));
+        app.queue.push(track("B"));
+        let (tx, rx) = mpsc::unbounded_channel();
+        app.pending_stream = Some((app.queue.current_track().unwrap().clone(), rx));
+        app.queue.remove(0);
+        tx.send(Ok(TrackSource {
+            stream_url: "unused".into(),
+            referer: String::new(),
+            audio_quality: AudioQuality::LegacyMp4,
+        }))
+        .unwrap();
+        app.handle_tick();
+        assert!(app.pending_stream.is_none());
+        assert!(app.queue.current_track().unwrap().source.is_none());
+        assert!(!app.is_playing);
+    }
+
+    #[test]
+    fn queued_old_eof_and_error_do_not_change_a_new_load() {
+        use crate::queue::track::{AudioQuality, TrackSource};
+        let mut app = test_app();
+        for name in ["A", "B", "C"] {
+            app.queue.push(track(name));
+        }
+        app.queue.jump_to(1);
+        // Simulate B resolution having just completed: no pending_stream remains,
+        // but A's already queued events still carry the previous load generation.
+        app.player
+            .play(&TrackSource {
+                stream_url: "invalid\0url".into(),
+                referer: String::new(),
+                audio_quality: AudioQuality::LegacyMp4,
+            })
+            .unwrap();
+        app.is_playing = true;
+        for reason in [EndReason::Eof, EndReason::Error] {
+            app.handle_player_event(PlayerEvent::TrackEnded {
+                generation: 0,
+                reason,
+            });
+        }
+        assert_eq!(app.queue.current_index(), Some(1));
+        assert!(app.pending_stream.is_none());
+        assert!(app.is_playing);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn sequential_eof_at_tail_stops_without_pending_resolution() {
+        let mut app = test_app();
+        app.queue.push(track("last"));
+        app.is_playing = true;
+        app.handle_player_event(PlayerEvent::TrackEnded {
+            generation: 0,
+            reason: EndReason::Eof,
+        });
+        assert_eq!(app.queue.current_index(), None);
+        assert!(!app.is_playing);
+        assert!(app.pending_stream.is_none());
+    }
+
+    #[test]
     fn stop_end_reason_is_not_a_playback_error() {
         // Regression: mpv reports the outgoing file as STOP (2) whenever we
         // load another one, so switching tracks used to print
@@ -2266,6 +2538,7 @@ mod tests {
         app.is_playing = true;
 
         app.handle_player_event(PlayerEvent::TrackEnded {
+            generation: 0,
             reason: EndReason::Stop,
         });
 
@@ -2281,6 +2554,7 @@ mod tests {
         app.is_playing = true;
 
         app.handle_player_event(PlayerEvent::TrackEnded {
+            generation: 0,
             reason: EndReason::Error,
         });
 

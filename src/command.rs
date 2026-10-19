@@ -27,6 +27,7 @@ pub enum Command {
     RemoveFromQueue,
     OpenSearch,
     CloseSearch,
+    SearchEscape,
     SearchInput(char),
     SearchBackspace,
     SearchSubmit,

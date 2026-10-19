@@ -20,18 +20,23 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let _is_input_mode = app.input_mode == InputMode::SearchInput;
     let mode_str = match app.input_mode {
         InputMode::SearchInput => " -- INSERT -- ",
         InputMode::SearchNormal => " -- NORMAL -- ",
+        InputMode::SearchResults => " -- RESULTS -- ",
         _ => "",
     };
 
     // Draw input box
     let input_text = format!("/{}", app.search_query);
+    let hint = match app.input_mode {
+        InputMode::SearchInput => "Enter search · Esc normal",
+        InputMode::SearchNormal => "i/a edit · j results · Esc close",
+        _ => "i edit · Esc query",
+    };
     let input_title = format!("Search{}", mode_str);
 
-    let input_border_style = if app.search_focus_input {
+    let input_border_style = if app.input_mode.search_focus_input() {
         app.ui.theme.focused_border
     } else {
         app.ui.theme.unfocused_border
@@ -42,13 +47,14 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(input_title)
+                .title_bottom(hint)
                 .border_style(input_border_style),
         )
         .style(app.ui.theme.search_input);
     f.render_widget(input, chunks[0]);
 
     // Draw results list
-    let results_border_style = if !app.search_focus_input {
+    let results_border_style = if !app.input_mode.search_focus_input() {
         app.ui.theme.focused_border
     } else {
         app.ui.theme.unfocused_border
@@ -60,7 +66,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         .enumerate()
         .map(|(i, track)| {
             let is_selected = i == app.search_cursor;
-            let style = if is_selected && !app.search_focus_input {
+            let style = if is_selected && !app.input_mode.search_focus_input() {
                 app.ui.theme.focused_item.add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default()
@@ -92,7 +98,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
     f.render_stateful_widget(list, chunks[1], &mut state);
 
     // Set cursor position
-    if app.search_focus_input {
+    if app.input_mode.search_focus_input() {
         // Use unicode-width for CJK characters
         let query_prefix: String = app
             .search_query

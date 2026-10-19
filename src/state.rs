@@ -1,7 +1,8 @@
 /// Runtime state persisted across sessions (state.json).
 ///
 /// Stored in the same config directory as `config.toml` and `playlists.json`.
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use crate::config::Config;
 use crate::queue::PlayMode;
 use crate::queue::track::Track;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     /// Ordered list of tracks in the playback queue.
     #[serde(default)]
@@ -34,7 +35,10 @@ impl AppState {
 
     /// Load from disk. Returns a default (empty) state if the file does not exist.
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::storage_path()?;
+        Self::load_from(&Self::storage_path()?)
+    }
+
+    pub(crate) fn load_from(path: &Path) -> anyhow::Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -47,15 +51,26 @@ impl AppState {
 
     /// Persist to disk. Creates the config directory if absent.
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::storage_path()?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating dir {}", dir.display()))?;
-        }
-        let data = serde_json::to_string_pretty(self).context("serializing state")?;
-        std::fs::write(&path, &data).with_context(|| format!("writing {}", path.display()))?;
-        Ok(())
+        self.save_to(&Self::storage_path()?)
     }
+
+    pub(crate) fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        save_json_atomic(path, self)
+    }
+}
+
+/// Replace the complete snapshot atomically; an interrupted write leaves the old
+/// file intact. Callers write synchronously so older snapshots cannot overtake newer ones.
+pub(crate) fn save_json_atomic(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let dir = path.parent().context("storage path has no parent")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating dir {}", dir.display()))?;
+    let mut file = tempfile::NamedTempFile::new_in(dir).context("creating snapshot temp file")?;
+    serde_json::to_writer_pretty(&mut file, value).context("serializing snapshot")?;
+    file.flush().context("flushing snapshot")?;
+    file.as_file().sync_all().context("syncing snapshot")?;
+    file.persist(path)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -75,6 +90,74 @@ mod tests {
             page: None,
             source: None,
         }
+    }
+
+    #[test]
+    fn multi_part_queue_disk_snapshot_replaces_deleted_and_empty_contents() {
+        use crate::queue::Queue;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut queue = Queue::new();
+        for page in 1..=3 {
+            let mut part = track("BVparts");
+            part.cid = 1000 + page as u64;
+            part.page = Some(page);
+            part.part = Some(format!("P{page}"));
+            queue.push(part);
+        }
+        let save = |queue: &Queue| {
+            let (queue_tracks, queue_current_index, play_mode) = queue.snapshot();
+            AppState {
+                queue_tracks,
+                queue_current_index,
+                play_mode,
+            }
+            .save_to(&path)
+            .unwrap();
+        };
+        save(&queue);
+        queue.remove(1);
+        save(&queue);
+        let state = AppState::load_from(&path).unwrap();
+        assert_eq!(
+            state
+                .queue_tracks
+                .iter()
+                .map(|t| (t.cid, t.page))
+                .collect::<Vec<_>>(),
+            vec![(1001, Some(1)), (1003, Some(3))]
+        );
+        queue.clear();
+        save(&queue);
+        let state = AppState::load_from(&path).unwrap();
+        assert!(
+            Queue::restore(
+                state.queue_tracks,
+                state.queue_current_index,
+                state.play_mode
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_snapshot_write_preserves_previous_file() {
+        struct InvalidSnapshot;
+        impl Serialize for InvalidSnapshot {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("injected serialization failure"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let initial = AppState {
+            queue_tracks: vec![track("BVkeep")],
+            ..Default::default()
+        };
+        initial.save_to(&path).unwrap();
+        assert!(save_json_atomic(&path, &InvalidSnapshot).is_err());
+        assert_eq!(AppState::load_from(&path).unwrap(), initial);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
