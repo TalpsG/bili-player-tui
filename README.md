@@ -46,6 +46,32 @@ cargo build --release
 # 产物位于: target/release/bili-player-cli
 ```
 
+### Windows（x64 MSVC，实验性）
+
+安装 Rust stable 的 `x86_64-pc-windows-msvc` 工具链，以及 Visual Studio Build Tools 的「使用 C++ 的桌面开发」（含 Windows SDK）。准备同一 x64 libmpv 版本的运行库和 **MSVC 导入库**：
+
+```text
+C:\Libraries\libmpv\
+  lib\mpv.lib
+  bin\mpv-2.dll       # 保留实际 DLL 名称，也可能是 libmpv-2.dll
+  bin\其他依赖.dll
+```
+
+`mpv.exe` 本身不包含开发库。MinGW 构建的 libmpv DLL 也可配套生成 MSVC 导入库，见 [mpv 官方说明](https://github.com/mpv-player/mpv/blob/master/DOCS/compile-windows.md#linking-libmpv-with-msvc-programs)；导入库记录的 DLL 名必须与实际文件一致，不要直接改名。脚本检查文件存在并将 `bin` 加入本次 Cargo 调用的 PATH，不能保证所有间接依赖均已齐全。
+
+在 PowerShell 中运行（也可用 `MPV_DIR` 指定库目录）：
+
+```powershell
+$env:LIBMPV_ROOT = 'C:\Libraries\libmpv'
+.\build.ps1 --release
+.\build.ps1 run --release
+.\build.ps1 test
+.\build.ps1 run --release '--' play BV1xx411c7mD
+# 也可直接传 -MpvRoot 'C:\Libraries\libmpv'
+```
+
+产物为 `target/x86_64-pc-windows-msvc/release/bili-player-cli.exe`。运行 `.exe` 时仍需让上述 `bin` 在 PATH 中（使用脚本的 `run` 会自动设置）。Windows 封面使用 Halfblocks，默认按 8×16 像素字符单元保持比例；若终端字体比例不同，可设置 `$env:BILI_PLAYER_CELL_SIZE = '9x18'`。尚需在原生 Windows 上验证链接、播放及终端显示。
+
 ### 运行
 
 ```bash
